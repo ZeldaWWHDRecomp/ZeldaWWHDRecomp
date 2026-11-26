@@ -29,6 +29,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../input_map.h"
 #include "../mouse_bindings.h"
 #include "../mods/mods.h"
+#include "../motion/deck_gyro.h"
 #include "../motion/motion.h"
 #include "../rumble.h"
 #include "../runtime.h"
@@ -129,6 +130,13 @@ static std::map<SDL_JoystickID,SDL_Gamepad*> g_controllers;
 static overlay::DeviceGates<SDL_JoystickID> g_gates;  // update(): one per device, see overlay/release_gate.h
 static std::vector<SDL_JoystickID> g_order;  // connect order: the oldest still present is dominant
 static std::set<SDL_JoystickID> g_rumble_controllers;  // the ones that have a rumble motor
+// Steam Deck (motion/deck_gyro.h, issue #566): the built-in controller, opened for its gyro only while
+// Steam Input's virtual pad is connected. Never in g_controllers: no buttons, sticks, triggers, rumble,
+// prompts or Controller details from it. Under g_pads_mu (declared below) like g_controllers.
+static std::map<SDL_JoystickID,SDL_Gamepad*> g_sensor_only;
+static bool g_deck_gyro=false;           // prepare_deck_gyro: a Steam Deck, WWHD_DECK_GYRO not 0
+static bool g_deck_reported=false;       // the one fallback line was logged
+static SDL_JoystickID g_active_pad=0;    // update(): the controller in use (main thread)
 // Only the integration fixture opts synthetic WUP-028 identity in; touch pads stay excluded.
 #ifdef WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION
 static bool test_virtual_gamepad_detection(){return getenv("WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION")!=nullptr;}
@@ -464,10 +472,17 @@ static void set_sensors_locked(SDL_Gamepad* pad,bool on){
  if(on&&!(g&&a))LOG("[gyro] %s: turning its motion sensors on failed: %s",SDL_GetGamepadName(pad),SDL_GetError());
  if(on)g_sensor_seen[SDL_GetGamepadID(pad)]=SDL_GetTicks();
 }
+// the controllers and the sensor-only devices (g_pads_mu held)
+static std::vector<std::pair<SDL_JoystickID,SDL_Gamepad*>> motion_pads_locked(){
+ std::vector<std::pair<SDL_JoystickID,SDL_Gamepad*>> v(g_controllers.begin(),g_controllers.end());
+ v.insert(v.end(),g_sensor_only.begin(),g_sensor_only.end());
+ return v;
+}
 static void update_sensors(){
  const bool want=motion::wants_controller_sensors();
  std::lock_guard lk(g_pads_mu);
- int n=0;for(auto [id,pad]:g_controllers)if(SDL_GamepadConnected(pad)&&has_motion(pad))n++;
+ const auto pads=motion_pads_locked();
+ int n=0;for(auto [id,pad]:pads)if(SDL_GamepadConnected(pad)&&has_motion(pad))n++;
  motion::set_gyro_controllers(n);
  static bool focused=true;
  const bool focus=controllers_live();  // (the background option: SDL keeps sending samples there)
@@ -479,7 +494,7 @@ static void update_sensors(){
  if(want==g_sensors_on){
   if(!want||!focus||getenv("WWHD_NO_HOST_INPUT"))return;
   const uint64_t now=SDL_GetTicks();
-  for(auto [id,pad]:g_controllers){
+  for(auto [id,pad]:pads){
    if(!SDL_GamepadConnected(pad)||!has_motion(pad))continue;
    uint64_t& seen=g_sensor_seen[id];uint64_t& kick=g_sensor_kick[id];
    if(now-seen<2000||now-kick<5000)continue;
@@ -490,12 +505,29 @@ static void update_sensors(){
   return;
  }
  g_sensors_on=want;g_accel.clear();
- for(auto [id,pad]:g_controllers)set_sensors_locked(pad,want);
+ for(auto [id,pad]:pads)set_sensors_locked(pad,want);
  if(want)LOG("[gyro] controller motion sensors on (%d controller(s) with a gyro)",n);
+}
+// a sensor-only Deck controller's gyro: only while the controller in use has none of its own (two gyros
+// would fight over the aim); one line says which device delivers the gyro whenever that changes
+static bool sensor_only_feeds(SDL_JoystickID which){
+ if(!g_sensor_only.contains(which))return true;
+ bool known=false,motion=false;const char* name=nullptr;
+ if(auto i=g_controllers.find(g_active_pad);g_active_pad&&i!=g_controllers.end()){known=true;motion=has_motion(i->second);name=SDL_GetGamepadName(i->second);}
+ const bool feeds=deck_gyro::sensor_only_feeds(known,motion);
+ static int logged=-1;
+ if(logged!=(int)feeds){
+  logged=feeds;
+  if(feeds)LOG("[gyro] Steam Deck: Controller gyro reads the built-in controller (id %u, sensors only; the buttons come from %s)",
+               (unsigned)which,known?(name?name:"the controller in use"):"Steam Input's virtual pad");
+  else LOG("[gyro] Steam Deck: Controller gyro reads %s (it has its own gyro); the built-in controller's is left out",name?name:"the controller in use");
+ }
+ return feeds;
 }
 static void sensor_event(const SDL_GamepadSensorEvent& e){
  if(e.sensor==SDL_SENSOR_ACCEL){g_accel[e.which]={e.data[0],e.data[1],e.data[2]};return;}
  if(e.sensor!=SDL_SENSOR_GYRO)return;
+ if(!sensor_only_feeds(e.which))return;
  auto a=g_accel.find(e.which);if(a==g_accel.end())return;
  motion::controller_sample((uint64_t)e.which,e.sensor_timestamp,e.data,a->second.data());
 }
@@ -641,12 +673,95 @@ static void note_dominant_labels(){
  for(const auto& c:candidates)changed|=input_map::auto_gamecube(m,c.guid,c.name,c.detected,c.pc);
  if(changed)input_map::set_current(m);
 }
+// ---- Steam Deck: the built-in controller next to Steam Input (motion/deck_gyro.h, issue #566) ----
+void prepare_deck_gyro(bool steam_deck){
+ const char* env=getenv("WWHD_DECK_GYRO");
+ g_deck_gyro=deck_gyro::enabled(steam_deck,env);
+ if(!g_deck_gyro){
+  if(steam_deck)LOG("[gyro] Steam Deck: the built-in controller's gyro next to Steam Input is off (WWHD_DECK_GYRO=%s)",env?env:"");
+  return;
+ }
+ auto read_file=[](const std::string& path){
+  std::string out;
+  if(FILE* f=fopen(path.c_str(),"rb")){char b[4096];size_t n;while((n=fread(b,1,sizeof b,f))>0)out.append(b,n);fclose(f);}
+  return out;};
+ const auto p=deck_gyro::prepare(true,[](const char* name){return (const char*)getenv(name);},read_file);
+ for(const auto& [name,value]:p.set){
+  // SDL reads these as hints (an override hint wins over the environment) and, for the ignore lists, also
+  // straight from the C library's environment (SDL_getenv_unsafe): SDL_setenv_unsafe sets that one and
+  // SDL's own copy, the hint the rest
+  SDL_setenv_unsafe(name.c_str(),value.c_str(),1);
+  SDL_SetHintWithPriority(name.c_str(),value.c_str(),SDL_HINT_OVERRIDE);
+ }
+ LOG("[gyro] Steam Deck: the built-in controller may open next to Steam Input's virtual pad for its gyro (%s; SDL's HIDAPI "
+     "Steam Deck driver on; WWHD_DECK_GYRO=0 turns this off)",p.was_ignored?"taken off Steam's controller ignore list":"Steam did not hide it");
+}
+// every connected gamepad, but `gone` (being removed)
+static std::vector<deck_gyro::Pad> present_pads(SDL_JoystickID gone=0){
+ std::vector<deck_gyro::Pad> v;
+ int n=0;SDL_JoystickID* ids=SDL_GetGamepads(&n);
+ for(int i=0;i<n;i++)if(ids[i]!=gone)v.push_back({(uint32_t)ids[i],SDL_GetGamepadVendorForID(ids[i]),SDL_GetGamepadProductForID(ids[i])});
+ SDL_free(ids);
+ return v;
+}
+static deck_gyro::Role deck_role(SDL_JoystickID id,SDL_JoystickID gone=0){
+ if(!g_deck_gyro)return deck_gyro::Role::kController;
+ const deck_gyro::Pad pad{(uint32_t)id,SDL_GetGamepadVendorForID(id),SDL_GetGamepadProductForID(id)};
+ return deck_gyro::role(true,pad,present_pads(gone));
+}
+// g_pads_mu held
+static void open_sensor_only_locked(SDL_JoystickID id){
+ SDL_Gamepad* pad=SDL_OpenGamepad(id);
+ if(!pad){
+  LOG("[gyro] Steam Deck: opening the built-in controller for its gyro failed (%s): Controller gyro as before (Steam Input's virtual pad has no gyro)",SDL_GetError());
+  g_deck_reported=true;return;
+ }
+ g_sensor_only[id]=pad;g_deck_reported=true;
+ const bool motion=has_motion(pad);
+ LOG("[gyro] Steam Deck: built-in controller opened for its gyro only (id %u%s); its buttons stay with Steam Input's virtual pad",
+     (unsigned)id,motion?"":", but SDL reports no gyro and accelerometer for it: Controller gyro as before");
+ if(g_sensors_on)set_sensors_locked(pad,true);
+}
+static void open_controller(SDL_JoystickID id);
+static void close_controller(SDL_JoystickID id);
+// after a controller came or went: a Deck controller that should change its role (Steam's virtual pad
+// came or went) is closed and opened again in the new one
+static void rebalance_deck(SDL_JoystickID gone=0){
+ if(!g_deck_gyro)return;
+ std::vector<SDL_JoystickID> flip;
+ {std::lock_guard lk(g_pads_mu);
+  for(const auto& p:present_pads(gone)){
+   const bool sensor=deck_role(p.id,gone)==deck_gyro::Role::kSensorOnly;
+   if((sensor&&g_controllers.contains(p.id))||(!sensor&&g_sensor_only.contains(p.id)))flip.push_back(p.id);
+  }}
+ for(SDL_JoystickID id:flip){
+  LOG("[gyro] Steam Deck: the built-in controller becomes %s",deck_role(id,gone)==deck_gyro::Role::kSensorOnly?
+      "a sensor-only device (Steam Input's virtual pad connected)":"the normal controller (no Steam Input virtual pad)");
+  close_controller(id);open_controller(id);
+ }
+}
+// one line when Steam Input's virtual pad is there but the Deck's controller never shows up (5 s)
+static void deck_watch(){
+ if(!g_deck_gyro||g_deck_reported)return;
+ static uint64_t since=0;
+ bool steam=false;
+ {std::lock_guard lk(g_pads_mu);
+  if(!g_sensor_only.empty()){g_deck_reported=true;return;}
+  for(auto [id,pad]:g_controllers)if(deck_gyro::is_steam_virtual_pad(SDL_GetGamepadVendor(pad),SDL_GetGamepadProduct(pad)))steam=true;}
+ if(!steam){since=0;return;}
+ if(!since)since=SDL_GetTicks();
+ if(SDL_GetTicks()-since<5000)return;
+ g_deck_reported=true;
+ LOG("[gyro] Steam Deck: the built-in controller did not show up next to Steam Input's virtual pad: Controller gyro has no "
+     "sensors to read (as before #566); Steam's gyro to mouse (Gyro source: Mouse) or a Cemuhook server still work");
+}
 static void open_controller(SDL_JoystickID id){
 #ifdef __ANDROID__
  if(!SDL_IsJoystickVirtual(id))phone_rumble::last_input_touch=false;
 #endif
  std::lock_guard lk(g_pads_mu);
- if(g_controllers.contains(id))return;
+ if(g_controllers.contains(id)||g_sensor_only.contains(id))return;
+ if(deck_role(id)==deck_gyro::Role::kSensorOnly){open_sensor_only_locked(id);return;}
 #ifdef __ANDROID__
  if(android_controller::odin(SDL_GetGamepadVendorForID(id),SDL_GetGamepadProductForID(id))) {
   if(char* original=SDL_GetGamepadMappingForID(id)) {
@@ -711,6 +826,7 @@ static void open_controller(SDL_JoystickID id){
 }
 static void close_controller(SDL_JoystickID id){
  {std::lock_guard lk(g_pads_mu);
+  if(auto s=g_sensor_only.find(id);s!=g_sensor_only.end()){SDL_CloseGamepad(s->second);g_sensor_only.erase(s);LOG("[gyro] Steam Deck: built-in controller (sensors only) closed: id %u",(unsigned)id);}
   auto i=g_controllers.find(id);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);LOG("[input] controller disconnected: id %u",(unsigned)id);}
   std::erase(g_order,id);
   g_rumble_controllers.erase(id);g_rumble_sent.erase(id);g_accel.erase(id);g_start_gates.erase(id);g_ident.erase(id);g_offer_pending.erase(id);
@@ -752,6 +868,7 @@ void init(){
  if(!getenv("WWHD_NO_CONTROLLERS")) {
   if(!SDL_InitSubSystem(SDL_INIT_GAMEPAD)){LOG("[input] SDL gamepad initialization: %s",SDL_GetError());return;}
   int count=0;auto* ids=SDL_GetGamepads(&count);for(int i=0;i<count;i++)open_controller(ids[i]);SDL_free(ids);
+  rebalance_deck();
   note_dominant_labels();  // before the first read, so Automatic is settled at startup
   SDL_AddEventWatch(rumble_quit_watch,nullptr);
   atexit(stop_rumble_now);  // std::exit: the game's exit(), its main thread returned
@@ -966,8 +1083,8 @@ void handle_event(const SDL_Event& event){
  }
  if(overlay::captures())mods::update_mouse();
  else if(mods::handle_mouse_event(event))return;
- if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS")){open_controller(event.gdevice.which);note_dominant_labels();}
- if(event.type==SDL_EVENT_GAMEPAD_REMOVED)close_controller(event.gdevice.which);
+ if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS")){open_controller(event.gdevice.which);rebalance_deck();note_dominant_labels();}
+ if(event.type==SDL_EVENT_GAMEPAD_REMOVED){close_controller(event.gdevice.which);rebalance_deck(event.gdevice.which);}
  // a device SDL sees only as a joystick (no gamepad mapping) is not used; say so for bug reports (#556)
  if(event.type==SDL_EVENT_JOYSTICK_ADDED&&!SDL_IsGamepad(event.jdevice.which)){
   const char* n=SDL_GetJoystickNameForID(event.jdevice.which);
@@ -1041,6 +1158,7 @@ void update(){
  mods::update_mouse();
  apply_rumble();
  update_sensors();
+ deck_watch();
 #ifdef __ANDROID__
  update_device_sensors();
 #endif
@@ -1137,7 +1255,7 @@ void update(){
  }
  // the controller in use (the overlay's confirm / back buttons follow its bindings), the setup offer on
  // a new controller's first press, and the list for Controller details
- static SDL_JoystickID active=0;
+ SDL_JoystickID& active=g_active_pad;
  std::vector<input::ControllerInfo> infos;
  for(size_t i=0;i<devices.size();i++){
   const SDL_JoystickID id=devices[i].first;

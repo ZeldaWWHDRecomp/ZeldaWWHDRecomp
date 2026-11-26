@@ -45,6 +45,16 @@ what is on `devel` and not released yet (also in the
   the in-between frames never further from Link than both game steps (so not inside the wall). The first pull-in
   onto a wall, a sudden jump of more than 30 % and cutscene cuts are still drawn exactly. `WWHD_INTERP_CAM_WALL=0`
   restores the old behaviour.
+### Improved
+
+- **Steam Deck: Controller gyro works under Steam Input** (#566). In Game Mode (and any game started from Steam with
+  Steam Input) Steam hides the Deck's built-in controller from games and gives them its virtual pad, which has no
+  gyro, so **Controller gyro** had nothing to read. The game now keeps reading every button from Steam's virtual pad
+  and opens the built-in controller next to it for its gyro and accelerometer only: its buttons never count twice,
+  it never rumbles and the prompts keep following the controller in use. A controller with its own gyro in use
+  keeps its gyro. Without Steam Input the built-in controller is the normal controller, as before.
+  `WWHD_DECK_GYRO=0` turns this off. Thanks to the Metroid Prime 2 port's approach and rivyr, who worked it out
+  there.
 
 ## v0.5.2
 

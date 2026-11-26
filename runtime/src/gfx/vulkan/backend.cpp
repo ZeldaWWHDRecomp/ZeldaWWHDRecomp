@@ -5643,6 +5643,8 @@ void init() {
       SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
   }
 #endif
+  // Steam Deck: the built-in controller's gyro next to Steam Input's virtual pad (issue #566)
+  input::prepare_deck_gyro(smooth_defaults::steam_deck());
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO))
     exception_report::raise(SDL_GetError());
 #if defined(WWHD_HDR_OUTPUT) && !defined(_WIN32)
