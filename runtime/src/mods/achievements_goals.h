@@ -33,6 +33,14 @@ struct Read {
     bool event(unsigned flag) const { return (d[GP_EVENTS + (flag >> 8)] & (flag & 0xFF)) == (flag & 0xFF); }
     unsigned reg(unsigned b) const { return d[GP_EVENTS + b]; }
     bool item(unsigned slot) const { return d[GP_ITEMS + slot] != 0xFF; }
+    // the bag's letters and the like (dSv_player_bag_item_c mReserve[8], items 0x8C..): got once (dSv_player_get_bag_item_c
+    // mReserveFlags, a big-endian u32, bit item - 0x8C) and in the bag now
+    bool got_reserve(unsigned no) const { return (gp_u32(d, GP_GET_RESERVE) >> no) & 1; }
+    bool bag_reserve(unsigned item) const {
+        for (unsigned i = 0; i < 8; i++)
+            if (d[GP_BAG_RESERVE + i] == item) return true;
+        return false;
+    }
     unsigned stage_byte(int st, unsigned o) const { return gp_stage_byte(d, st, o); }
     bool stage_bit(int st, unsigned o, unsigned bit) const { return (stage_byte(st, o) >> bit) & 1; }
     // chest bits (mTbox, a big-endian u32): all of mask
@@ -176,7 +184,11 @@ inline const Goal kAll[] = {
     {"joy_pendant", kQuests, 3, "Birthday Gift", "Bring Mrs. Marie a birthday present.", 0, 0, [](const Read& s) { return s.reg(0xC0) != 0; }, false, kDecomp},
     {"lenzo", kQuests, 5, "Picto Assistant", "Take all three pictos Lenzo asks for.", 0, 0, [](const Read& s) { return s.reg(0xC4) >= 6; }, false, kDecomp},
     {"anton_linda", kQuests, 5, "Matchmaker", "Bring Anton and Linda together.", 0, 0, [](const Read& s) { return s.event(0x2280); }, false, kSaves},
-    {"maggie_moe", kQuests, 5, "Love Letters", "Carry the letters between Maggie and Moe and take Maggie's thanks.", 0, 0, [](const Read& s) { return (s.reg(0xAC) & 3) == 3; }, false, kSaves},
+    // Maggie (d_a_npc_kp1.cpp getMsg; d_kankyo.cpp's day counter 0xCCFF too): Moblin's Letter (0x9B, reserve bit 0xF)
+    // got and no longer in the bag = handed to her; it leaves the bag at the end of her thanks (0x1E9D,
+    // setReserveItemEmpty), right before her Piece of Heart (GET_KAKERA_HRT), and the postbox refuses it. Not event
+    // register 0xAC & 3: that is LETTER_BAITOS_MOM, the reply to the Note to Mom (#650)
+    {"maggie_moe", kQuests, 5, "Love Letters", "Carry the letters between Maggie and Moe and take Maggie's thanks.", 0, 0, [](const Read& s) { return s.got_reserve(0xF) && !s.bag_reserve(0x9B); }, false, kDecomp},
     {"lighthouse", kQuests, 5, "Light the Way", "Get the lighthouse of %s working again and take the reward.", 0, kWindfall, [](const Read& s) { return s.event(0x1B20); }, false, kSaves},
     {"potions", kQuests, 5, "Potion Master", "Help Doc Bandam brew the green and the blue potion.", 0, 0, [](const Read& s) { return s.event(0x0D06); }, false, kDecomp},
     {"letter_sorting", kQuests, 5, "Sorted", "Sort 25 letters for Baito on %s.", 0, kDragonRoost, [](const Read& s) { return s.event(0x2702); }, false, kDecomp},

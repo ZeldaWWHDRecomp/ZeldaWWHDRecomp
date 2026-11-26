@@ -9,6 +9,10 @@ what is on `devel` and not released yet (also in the
 
 ### Fixed
 
+- **Achievements: "Love Letters" no longer unlocks with the Note to Mom's Piece of Heart** (#650, thanks @rnp509). It
+  checked the reply letter to the Note to Mom (from Baito's mother) instead of Maggie's quest. It now unlocks when
+  Moblin's Letter has been handed to Maggie, the same check Maggie makes before she gives her Piece of Heart. Already
+  earned achievements are kept.
 - **Settings: "Coloured face buttons" is dimmed when it has no effect** (#584, thanks @jamescastells). With Button
   prompts set to Original (or Keyboard / mouse, or an automatic look that resolves to one of them) the game's own
   buttons are shown and the colour options do nothing, but their checkboxes stayed active. They are now dimmed there,
