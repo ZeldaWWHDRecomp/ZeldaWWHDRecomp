@@ -82,6 +82,22 @@ int main() {
         r.d = d, r.hero = true;
         assert(goal("the_end_hero")->met(r) && goal("hero_mode")->met(r));
     }
+    // Love Letters (#650): the Note to Mom's reply (event register 0xAC & 3, LETTER_BAITOS_MOM, its Piece of Heart) is
+    // not Maggie's quest; Moblin's Letter (0x9B) got (reserve bit 0xF) and handed to her (gone from the bag) is
+    fresh();
+    d[GP_EVENTS + 0xAC] = 0x03;
+    assert(!met("maggie_moe"));
+    d[GP_GET_RESERVE + 2] = 0x40;  // (Maggie's Letter, bit 0xE: not yet)
+    assert(!met("maggie_moe"));
+    d[GP_GET_RESERVE + 2] |= 0x80, d[GP_BAG_RESERVE + 3] = 0x9B;  // Moblin's Letter got, still in the bag
+    for (unsigned i = 0; i < 8; i++)
+        if (i != 3) d[GP_BAG_RESERVE + i] = 0xFF;
+    assert(!met("maggie_moe"));
+    d[GP_BAG_RESERVE + 3] = 0xFF;  // given to Maggie
+    assert(met("maggie_moe"));
+    d[GP_EVENTS + 0xAC] = 0;
+    assert(met("maggie_moe"));
+    fresh();
     // the trees: all eight within 20 minutes of the first, timed from a change seen (a file loaded with some watered
     // doesn't count)
     {
