@@ -1,0 +1,61 @@
+# Gradle's downloads (android/: the Android Gradle plugin and the app's dependencies from google(),
+# mavenCentral() and the plugin portal, and the Gradle distribution), cached, so an APK build does not fetch
+# them all again: Maven Central answers a burst of requests from GitHub's runners with 429 Too Many Requests.
+# Use it before the first android/gradlew of a job (after actions/setup-java).
+#
+# Cached: ~/.gradle/caches/modules-2 (downloaded artifacts and metadata) and ~/.gradle/wrapper/dists (the
+# unpacked distribution). Nothing else from ~/.gradle (daemon logs, build output caches),
+# and never the release keystore: release.yml decodes it to $RUNNER_TEMP and removes it after the build.
+# Key: the runner image and architecture and the files that decide what Gradle downloads; when they change,
+# the previous key's cache is restored (restore-keys) and only the difference is downloaded.
+#
+# Cache scope (GitHub): a run restores caches saved on its own branch or tag and on the default branch
+# (main), and a pull request also those of its base branch. Only runs on devel and main save (pushes, the
+# nightly schedule on main, "Run workflow" there), as the ccache steps: pull requests restore devel's cache
+# and cannot replace it (most dependencies are not checksum-pinned, android/gradle/verification-metadata.xml).
+# Release tags see main's, which release.yml's nightly gradle-cache job keeps (and refreshes before GitHub's
+# 7-day eviction).
+#
+# Also: Gradle retries a repository request that failed with 429 (or a 5xx, a timeout) only 3 times, 1 s and
+# 2 s apart (Gradle 8.12: org.gradle.internal.repository.max.tentatives / .initial.backoff, system
+# properties read by ErrorHandlingModuleComponentRepository); on CI 6 tries, 2 s doubling (62 s in all).
+# They go into ~/.gradle/gradle.properties (CI only, not cached; android/gradle.properties stays as it is).
+name: Gradle cache
+description: Restore (and on devel and main save) Gradle's dependency cache and distribution
+outputs:
+  cache-hit:
+    description: "true when the exact key was restored"
+    value: ${{ steps.save.outputs.cache-hit || steps.restore.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      run: |
+        echo "key=gradle-v1-$ImageOS-${{ runner.arch }}-${{ hashFiles('android/settings.gradle', 'android/build.gradle', 'android/app/build.gradle', 'android/gradle.properties', 'android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle/verification-metadata.xml') }}" >> "$GITHUB_OUTPUT"
+        echo "prefix=gradle-v1-$ImageOS-${{ runner.arch }}-" >> "$GITHUB_OUTPUT"
+        mkdir -p ~/.gradle
+        printf '%s\n' 'systemProp.org.gradle.internal.repository.max.tentatives=6' \
+          'systemProp.org.gradle.internal.repository.initial.backoff=2000' >> ~/.gradle/gradle.properties
+
+    # devel and main: restore, and save when the exact key was missing (post step, only when the job succeeds)
+    - id: save
+      if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/devel' || github.ref == 'refs/heads/main')
+      uses: actions/cache@v5
+      with:
+        path: |
+          ~/.gradle/caches/modules-2
+          ~/.gradle/wrapper/dists
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.prefix }}
+
+    # everything else (pull requests, release tags, other branches): restore only
+    - id: restore
+      if: github.event_name == 'pull_request' || (github.ref != 'refs/heads/devel' && github.ref != 'refs/heads/main')
+      uses: actions/cache/restore@v5
+      with:
+        path: |
+          ~/.gradle/caches/modules-2
+          ~/.gradle/wrapper/dists
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: ${{ steps.key.outputs.prefix }}

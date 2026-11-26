@@ -28,6 +28,7 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/wrapper-validation@v4
+      - uses: ./.github/actions/gradle-cache  # Gradle downloads, cached
       - uses: ./.github/actions/apt-timeouts  # apt timeouts and retries
       - name: Android native build tools
         timeout-minutes: 15  # a stalled mirror fails fast instead of hanging until GitHub's 6 h limit
