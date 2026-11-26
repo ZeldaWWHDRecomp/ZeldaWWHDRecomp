@@ -254,6 +254,8 @@ bool direct_boat_speed();          // the direct camera as fast on the boat as o
 void set_direct_boat_speed(bool on);
 bool pinch_fov_on();               // Android: a pinch changes the field of view (default on)
 void set_pinch_fov_on(bool on);
+bool camera_stick_pitch();         // Right stick up/down: false Zoom (original, default), true Look up and down (#661)
+void set_camera_stick_pitch(bool look);
 float steer_swing_degrees(bool player_camera);  // camera.cpp, once per logic step
 bool steer_pinch(int phase, float d);           // 0 begin (true: on), 1 move, 2 end
 void steer_reset();                // a state load

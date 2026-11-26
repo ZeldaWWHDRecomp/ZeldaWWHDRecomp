@@ -41,6 +41,27 @@ directions. The game also has its own setting for the vertical direction of
 first-person aiming; it still works, and with both inverted they cancel out in
 first person.
 
+**Right stick up/down** (Controls → Camera, the item menu's settings page under
+Camera, and the macOS Controls window; issue #661) chooses what the right stick's
+vertical axis does in the third-person camera:
+
+- **Zoom (original)**, the default: as in Wind Waker, up brings the camera closer
+  and lower behind Link, down takes it further away and higher.
+- **Look up and down**: the camera tilts around Link (its pitch) and keeps its
+  distance, height and field of view, as in most current third-person games. Up
+  looks up (the camera goes lower), down looks down; **Invert camera up/down**
+  swaps them. The tilt stays where you leave it, as the original zoom does, until
+  the game's camera takes over again (targeting, a cutscene or talk, first
+  person, entering another area).
+
+The option changes only the game's manual camera (on foot, swimming, crawling, the
+Deku Leaf and the boat's free look), at the same rate and within the same
+up/down limits the game uses for its zoom (on foot on Outset: 30 degrees either
+way, 2.5 degrees per step, so about 0.8 s from one end to the other). First person, item aiming, targeting
+and the event cameras keep their own use of the stick. The mouse and touch
+camera's up/down follow the same choice. It is saved in the settings
+(`cameraStickPitch`); `WWHD_CAM_STICK_PITCH=1` (or `0`) overrides it for a run.
+
 While conducting, the **right stick supplies the notes**, including down. The
 **left stick controls the meter**: hold left or right to change the beat count.
 The D-pad does not substitute for the note stick in the original game. For example,

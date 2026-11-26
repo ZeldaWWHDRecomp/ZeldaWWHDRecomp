@@ -480,8 +480,7 @@ extern "C" void hook_024FA9C8(Cpu* c) {
 
 // f28: vertical stick rate (+1 = stick up = V decreases by PER degrees per step: the latitude step, [sp+0x14] at the
 // hook; the decomp build's point passes it, mods/camera_points.cpp)
-namespace mods {
-void manual_pitch_rate(Cpu* c, double per) {
+static void mouse_pitch_rate(Cpu* c, double per) {
     if (!mouse_step()) return;
     float dy;
     {
@@ -496,6 +495,42 @@ void manual_pitch_rate(Cpu* c, double per) {
     if (!(std::fabs(per) > 0.01)) return;
     // mouse down (dy > 0) looks down: V grows, so f28 < 0 (the other way with Invert camera up/down)
     c->f[28].ps0 = -dy / per * camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
+}
+
+// Right stick up/down: Look up and down (Controls > Camera, mods::camera_stick_pitch; issue #661). manualCamera's
+// vertical rate f28 (the stick's bezier-shaped y, after Invert camera up/down, or the mouse / swipe rate above) moves
+// four things together, each by its style's step: the centre height, the radius, the latitude and the field of view.
+// That is the game's zoom: up goes closer and lower, down further and higher. Look up and down keeps only the
+// latitude, with the original distance, height and field of view: here the rate is taken out of f28 (the centre
+// height, radius and field of view then see the stick at rest, as when it is pushed only sideways), and @02510DEC
+// puts it back into the latitude delta, -(rate x latitude step) as the game forms it. The style's latitude limits,
+// its crawl / swim / flight adjustments, the blocked-follow rate at a limit, the wall check and every mode change
+// (targeting, events, first person, the follow camera taking over) stay the game's. Only manualCamera reads f28, so
+// lock-on, first person, aiming, the boat's ride camera and the event cameras keep their own use of the stick.
+struct LookPitch { bool pending = false; double rate = 0, per = 0; };
+static LookPitch g_look_pitch;  // the game thread only: from @0251053C to @02510DEC of the same manualCamera run
+static void look_pitch_take(Cpu* c, double per) {
+    g_look_pitch.pending = false;
+    if (!camera_stick_pitch()) return;
+    const double rate = c->f[28].ps0;
+    if (rate == 0.0) return;  // at rest: the game's own values, untouched
+    g_look_pitch = {true, rate, per};
+    c->f[28].ps0 = 0.0;
+}
+// @02510DEC, the latitude delta f1 (before the descending-limits fix below)
+static void look_pitch_give(Cpu* c) {
+    if (!g_look_pitch.pending) return;
+    g_look_pitch.pending = false;
+    c->f[1].ps0 = c->f[1].ps1 = (float)-(g_look_pitch.rate * g_look_pitch.per);
+    static uint64_t n = 0;
+    if (trace_on() && (n++ % 10) == 0)
+        trace("look pitch: rate %.3f x latitude step %.2f -> %.3f degrees (limits %.1f .. %.1f)", g_look_pitch.rate,
+              g_look_pitch.per, c->f[1].ps0, c->f[2].ps0, c->f[3].ps0);
+}
+namespace mods {
+void manual_pitch_rate(Cpu* c, double per) {
+    mouse_pitch_rate(c, per);
+    look_pitch_take(c, per);
 }
 }  // namespace mods
 extern "C" void site_0251053C(Cpu* c) { mods::manual_pitch_rate(c, ldf32(c->r[1] + 0x14)); }
@@ -512,6 +547,7 @@ extern "C" void site_02510EE4(Cpu* c) {
 // The game's helper reverses a descending range; cancel that for camera input.
 // Keep the centre-height, radius and FOV calls, first person and aiming unchanged.
 extern "C" void site_02510DEC(Cpu* c) {
+    look_pitch_give(c);
     c->f[1].ps0 = camera_invert::manual_pitch_delta(c->f[1].ps0, c->f[2].ps0, c->f[3].ps0);
 }
 

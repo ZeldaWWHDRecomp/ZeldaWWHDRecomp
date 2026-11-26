@@ -3394,6 +3394,13 @@ void controls_camera_page() {
         if (enabled)
             builtin_options(id);
     }
+    // issue #661: the right stick's up/down in the follow camera (mods/camera.cpp look_pitch; saved, applies at once)
+    int pitch = mods::camera_stick_pitch() ? 1 : 0;
+    if (combo("Right stick up/down", &pitch, "Zoom (original)\0Look up and down\0"))
+        hostui::post([pitch] { mods::set_camera_stick_pitch(pitch == 1); });
+    help("Zoom (original): up brings the camera closer and lower, down further and higher, as in the game. Look up "
+         "and down: the camera tilts up and down around Link and keeps its distance. Invert camera up/down still "
+         "applies; the mouse camera's up/down follows this too. First person, aiming and targeting are unchanged.");
     heading("Movement and sailing");
     camera_extra_rows();
 }

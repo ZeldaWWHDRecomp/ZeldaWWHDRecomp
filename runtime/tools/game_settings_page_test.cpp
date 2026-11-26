@@ -385,6 +385,10 @@ int main() {
                               "Xbox, PlayStation and GameCube action words in their button's colour; off keeps the game's white.", "Off"})
             for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
         assert(game_settings_text::tr("Face button colours", 3) == "Farben der Aktionstasten");
+        // #661: the Camera tab's Right stick up/down choice
+        for (const char* w : {"Right stick up/down", "Zoom (original)", "Look up and down",
+                              "Zoom: closer and lower, as in the game. Look: the camera tilts up and down at the same distance."})
+            for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
     }
     std::puts("game_settings_page_test: ok");
 }

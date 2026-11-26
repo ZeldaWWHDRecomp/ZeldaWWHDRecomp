@@ -10,6 +10,8 @@
 //   cameraSwing (WWHD_CAMERA_SWING)      the camera swings behind Link while he runs (default off)
 //   directBoatSpeed (WWHD_DIRECT_BOAT)   the direct camera turns as fast on the boat as on foot (default on)
 //   touchPinchFov (WWHD_PINCH_FOV)       Android: two fingers pinch the field of view (default on)
+//   cameraStickPitch (WWHD_CAM_STICK_PITCH)  right stick up/down: 0 zoom as the game (default), 1 look up and down
+//                                        (camera.cpp look_pitch, issue #661)
 // WWHD_STEER_LOG=1 logs the camera, Link's facing and the kept angle ("[steer] ...").
 //
 // Idea from the GreenNaugahyde Android fork (GreenNaugahyde/ZeldaWWHDRecompAndroid, MPL-2.0); reimplemented.
@@ -65,6 +67,7 @@ Option g_mode{"WWHD_STEER_MODE", "steerMode", steer::kOff, steer::kStickHeld};
 Option g_swing{"WWHD_CAMERA_SWING", "cameraSwing", 0, 1};
 Option g_boat{"WWHD_DIRECT_BOAT", "directBoatSpeed", 1, 1};
 Option g_pinch{"WWHD_PINCH_FOV", "touchPinchFov", 1, 1};
+Option g_pitch{"WWHD_CAM_STICK_PITCH", "cameraStickPitch", 0, 1};
 
 steer::Options options() {
     steer::Options o;
@@ -133,6 +136,8 @@ bool direct_boat_speed() { return g_boat.get() != 0; }
 void set_direct_boat_speed(bool on) { g_boat.set(on); }
 bool pinch_fov_on() { return g_pinch.get() != 0; }
 void set_pinch_fov_on(bool on) { g_pinch.set(on); }
+bool camera_stick_pitch() { return g_pitch.get() != 0; }
+void set_camera_stick_pitch(bool look) { g_pitch.set(look); }
 
 // camera.cpp filter_pad, once per logic step: the swing's degrees for the camera's angle (0 none).
 // `player_camera`: the player turned the camera in this read (right stick, mouse, swipe)

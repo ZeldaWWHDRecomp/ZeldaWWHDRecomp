@@ -25,6 +25,9 @@ float cameraSpeed = 1.f, mouseSensitivity = .15f;
 namespace mods {
 float camera_speed() { return cameraSpeed; }
 float mouse_sensitivity() { return mouseSensitivity; }
+bool stickPitch = false;
+bool camera_stick_pitch() { return stickPitch; }
+void set_camera_stick_pitch(bool look) { stickPitch = look; }
 }
 namespace game_settings {
 void set_camera_speed(float v) { cameraSpeed = v; }
@@ -202,6 +205,12 @@ int main() {
         [g_controls syncOptions];
         assert(g_controls.cameraButtons[1].state==NSControlStateValueOff);
         assert(g_controls.cameraSpeed.floatValue==1.25f && g_controls.mouseSensitivity.floatValue==.125f);
+        // #661: Right stick up/down, Zoom (original) by default
+        assert(g_controls.stickPitch.indexOfSelectedItem==0);
+        [g_controls.stickPitch selectItemAtIndex:1];[g_controls stickPitchChanged:g_controls.stickPitch];
+        assert(mods::stickPitch);
+        mods::stickPitch=false;[g_controls syncOptions];
+        assert(g_controls.stickPitch.indexOfSelectedItem==0);
         menu_settings_key_test();
         std::filesystem::remove(path);
         fprintf(stderr,"controls_ui_test: passed (incl. fixed Cmd+, Settings menu key)\n");

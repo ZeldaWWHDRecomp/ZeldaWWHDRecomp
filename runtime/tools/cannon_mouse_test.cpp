@@ -18,7 +18,7 @@
 static uint64_t clock_step=100;
 static bool enabled=true,captured=true,gyro_mouse=true,aiming=false,look=false;
 static float sensitivity=.15f;
-static bool inverted=false;
+static bool inverted=false,look_pitch=false;
 void log_msg(const char*, ...) {}
 namespace mods {
 void filter_pad(input::PadState&);
@@ -30,6 +30,7 @@ uint64_t step(){return clock_step;} double game_time(){return double(clock_step)
 bool trace_on(){return false;} void trace(const char*,...){}
 void link_executed(uint32_t){} void lock_on_filter_pad(input::PadState&){} void leaf_filter_pad(input::PadState&){}
 float steer_swing_degrees(bool){return 0;}
+bool camera_stick_pitch(){return look_pitch;}
 }
 namespace motion {
 void set_aiming(bool on){aiming=on;} bool mouse_drives_gyro(){return gyro_mouse&&aiming&&!look;}
@@ -53,6 +54,7 @@ void f_0240EBB0_orig(Cpu*){} void f_024FA9C8_orig(Cpu*){}
 void f_0250D4E8_orig(Cpu*){} void f_0250FDC8_orig(Cpu*){} void f_025071FC_orig(Cpu*){}
 void hook_0240EBB0(Cpu*); void hook_025071FC(Cpu*);
 void site_02506CEC(Cpu*); void site_02508380(Cpu*); void site_025083C4(Cpu*);
+void site_0251053C(Cpu*); void site_02510DEC(Cpu*);
 }
 static constexpr uint32_t kLinkBase=0x20000000, kCamBase=kLinkBase+0x8000;
 static void map(uint32_t at,size_t size){
@@ -131,6 +133,25 @@ int main(){
     enabled=true;
     // Not aiming (on foot): the follow camera keeps its synthetic stick.
     procedure(0x0,false);clock_step+=10;p=sample(5,0);assert(close(p.rx,.4f));s=subject(0,0);assert(s.f[22].ps0==0);
+    // Right stick up/down: Look up and down (issue #661). manualCamera's vertical rate f28 leaves the centre height,
+    // radius and field of view (it becomes 0) and goes into the latitude delta f1 alone, -(rate x latitude step).
+    {
+        clock_step+=20;  // no mouse or swipe this step: the stick's own rate
+        Cpu m{};m.r[1]=kLinkBase+0x5000;stf32(m.r[1]+0x14,3.5f);
+        auto rate=[&](double r){m.f[28].ps0=r;site_0251053C(&m);return m.f[28].ps0;};
+        auto lat=[&](double d,double lo,double hi){m.f[1].ps0=d;m.f[2].ps0=lo;m.f[3].ps0=hi;site_02510DEC(&m);return m.f[1].ps0;};
+        // Zoom (original): both untouched
+        assert(rate(.7)==.7&&close((float)lat(-.7*3.5,-10,60),-2.45f));
+        look_pitch=true;
+        assert(rate(.7)==0&&close((float)lat(-0.0,-10,60),-2.45f));      // stick up: V decreases, the camera looks up
+        assert(rate(-1)==0&&close((float)lat(-0.0,-10,60),3.5f));        // stick down
+        assert(rate(.5)==0&&close((float)lat(-0.0,60,-10),1.75f));       // descending limits: the same look direction
+        assert(lat(-0.0,-10,60)==0&&std::signbit(m.f[1].ps0));           // used once: a later call keeps the game's delta
+        assert(rate(0)==0&&!std::signbit(m.f[28].ps0)&&std::signbit(lat(-0.0,-10,60)));  // at rest: nothing changes
+        look_pitch=false;
+        assert(rate(.7)==.7&&lat(-0.0,-10,60)==0&&std::signbit(m.f[1].ps0));
+    }
     puts("Cannon mouse: routing, gyro exclusion, priority, sensitivity, repeated reads and mode transitions PASS");
+    puts("Look up and down: the vertical rate goes to the latitude alone, once per manualCamera run, off by default PASS");
     puts("First-person mouse look: degrees per view, once per step, ease, inversion, stale movement, mouse camera off PASS");
 }
