@@ -117,6 +117,19 @@ R3) becomes the Jump input once. Saving writes `"version": 2` with `controllers`
 own buttons by `guid` and `name`), `controller_setup_declined`, and `l_turns_gamepad_page` (only
 when on).
 
+## Slow walk
+
+**Slow walk (hold)** (#626) is a third input of its own in Controls, on its own line under Jump anywhere
+and the moon jump: a controller input and a key, unbound by default (Left Shift, the usual walk key,
+is the keyboard's ZL). While it is held, the left stick, from the movement keys or a controller, moves
+Link at a share of its tilt: a full tilt (a keyboard diagonal too) walks instead of running. The share
+is the **Speed** next to it, 10–90 %, 30 % by default; the settings page has it as **Controls › Slow
+walk speed**. It is applied to the stick's final length, after the dead zone and the stick range, and
+never presses a Wii U button. It shares no input with the jumps (holding it would also jump; the page
+marks that as a conflict); on an input it shares with L (L1 / Q) it keeps L back in play while held, as
+a jump does. Saved as `SlowWalk` in `keyboard` and `controller`, and `slow_walk_share` in `options`
+(only when not 30 %); older files load with it unbound at 30 %.
+
 ## The item ring
 
 Hold **X**, **Y** or **R** while you play and a ring of your items opens. Tilt the left stick towards an

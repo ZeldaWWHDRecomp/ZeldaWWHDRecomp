@@ -17,8 +17,9 @@ enum : uint32_t {
 };
 
 // Virtual inputs (PadState::virt): the host's own actions, bound like Wii U buttons (input_map kJump,
-// kMoonJump) but never sent to the game. A button shared with the game's L presses only the jump.
-enum : uint32_t { kVirtJump = 1, kVirtMoonJump = 2 };
+// kMoonJump, kSlowWalk) but never sent to the game. A button shared with the game's L presses only the jump.
+// kVirtSlowWalk: while held, the hosts scale the left stick (input_map::apply_slow_walk, issue #626).
+enum : uint32_t { kVirtJump = 1, kVirtMoonJump = 2, kVirtSlowWalk = 4 };
 
 struct PadState {
     uint32_t buttons = 0;

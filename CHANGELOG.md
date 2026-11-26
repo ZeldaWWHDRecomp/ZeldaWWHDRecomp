@@ -59,6 +59,13 @@ what is on `devel` and not released yet (also in the
   and in a terminal; `--desktop-entry` / `--no-desktop-entry` answer it). It is on by default for a source build
   and off when setup runs from the AppImage, which starts the game itself. Updates and repairs keep the choice,
   and "no" removes the `wwhd.desktop` an earlier setup wrote (only setup's own entry, never another one).
+### New
+
+- **Slow walk** (#626). A new input in **Settings › Controls**, **Slow walk (hold)**, under Jump anywhere and the
+  moon jump: while it is held, the left stick (the movement keys or a controller) moves Link at a share of its
+  tilt, so a full tilt walks instead of running. The share is its **Speed**, 10–90 %, 30 % by default (also on
+  the settings page as **Controls › Slow walk speed**). Unbound by default, since Left Shift is the keyboard's ZL;
+  choose a key or controller input for it. Controls files from before keep working unchanged.
 
 ## v0.5.2
 

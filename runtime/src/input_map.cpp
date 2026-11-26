@@ -38,6 +38,7 @@ const ActionInfo kActions[kActionCount] = {
     {"RightStickLeft", "Right stick ← (camera)", 0}, {"RightStickRight", "Right stick → (camera)", 0},
     {"Screenshot", "Screenshot (app)", 0},
     {"Jump", "Jump anywhere (mod)", 0}, {"MoonJump", "Moon jump (cheat)", 0},
+    {"SlowWalk", "Slow walk (hold)", 0},
 };
 
 struct PadInfo { const char* id; const char* label; };
@@ -113,7 +114,9 @@ const KeyInfo* find_key(int code) {
 const char* action_id(int a) { return a >= 0 && a < kActionCount ? kActions[a].id : ""; }
 const char* action_label(int a) { return a >= 0 && a < kActionCount ? kActions[a].label : ""; }
 uint32_t action_bit(int a) { return a >= 0 && a < kActionCount ? kActions[a].bit : 0; }
-uint32_t action_virtual(int a) { return a == kJump ? input::kVirtJump : a == kMoonJump ? input::kVirtMoonJump : 0; }
+uint32_t action_virtual(int a) {
+    return a == kJump ? input::kVirtJump : a == kMoonJump ? input::kVirtMoonJump : a == kSlowWalk ? input::kVirtSlowWalk : 0;
+}
 int action_from_id(const std::string& id) {
     for (int a = 0; a < kActionCount; a++)
         if (id == kActions[a].id) return a;
@@ -293,6 +296,7 @@ Mapping Mapping::defaults() {
     // Jump anywhere and the moon jump where they always were, on the L inputs: in play, while one of them
     // is on, the game gets no L from them (play_buttons), so L1 / Q jump without turning the GamePad page
     key(kJump, kVK_ANSI_Q); key(kMoonJump, kVK_ANSI_Q);
+    // Slow walk (issue #626): unbound. Left Shift, the usual walk key, is the keyboard's ZL (target) here.
     // controllers map by position: the bottom face button (Xbox A) is the Wii U's B (face_layout)
     const int pads[kActionCount] = {
         kPadNone, kPadNone, kPadNone, kPadNone,  // A B X Y: face-layout preset, filled below
@@ -301,6 +305,7 @@ Mapping Mapping::defaults() {
         kPadLSUp, kPadLSDown, kPadLSLeft, kPadLSRight, kPadRSUp, kPadRSDown, kPadRSLeft, kPadRSRight,
         kPadNone,  // Screenshot: no controller input by default (every button already plays)
         kPadLB, kPadLB,  // Jump, MoonJump: L1 (shared with the Wii U's L, see above)
+        kPadNone,        // SlowWalk: every controller input already plays (the stick itself walks slowly)
     };
     for (int a = 0; a < kActionCount; a++) m.pad[a] = pads[a];
     apply_face_layout(m, FaceLayout::kPosition);
@@ -662,7 +667,7 @@ std::vector<int> pad_users(const Mapping& m, int pad, int except) {
 // other (the moon jump wins) and with the game buttons unused in play (L, d-pad down); a game button
 // moved to d-pad down shares it (play_buttons gives it to one of them by the game's state).
 static bool shares_ok(int a, int b) {
-    if (is_virtual(a) && is_virtual(b)) return true;
+    if (is_virtual(a) && is_virtual(b)) return is_jump(a) && is_jump(b);  // the slow walk would also jump
     if (is_virtual(a) || is_virtual(b)) return free_in_play(is_virtual(a) ? b : a);
     if (a == kScreenshot || b == kScreenshot) return false;
     return (a == kDDown) != (b == kDDown) && !free_in_play(a == kDDown ? b : a);
@@ -1083,6 +1088,13 @@ input::PadState combine(const input::PadState& a, const input::PadState& b) {
     return s;
 }
 
+void apply_slow_walk(input::PadState& s, float share) {
+    if (!(s.virt & input::kVirtSlowWalk)) return;
+    share = std::clamp(share, kMinSlowWalk, kMaxSlowWalk);
+    s.lx *= share;  // a uniform scale: the vector's length becomes share of it, its direction stays
+    s.ly *= share;
+}
+
 // ---- virtual actions on game buttons
 
 std::vector<int> displaced_by(const Mapping& m, int pad) {
@@ -1133,7 +1145,7 @@ bool bind_virtual(Mapping& m, int v, int pad, Displace d) {
         // the other virtual action there (Jump and the moon jump sit together on L1 by default) comes
         // along to the new input: on one input the moon jump wins while it is on
         for (int o = kFirstVirtual; o < kActionCount; o++)
-            if (o != v && to[i] != kPadNone && m.pad[o] == to[i]) m.pad[o] = pad;
+            if (o != v && is_jump(o) && is_jump(v) && to[i] != kPadNone && m.pad[o] == to[i]) m.pad[o] = pad;
     }
     m.pad[v] = pad;
     return true;
@@ -1332,9 +1344,11 @@ static PadPreset read_preset(const Json* j) {
     if (!j || j->type != Json::Obj) return p;
     if (auto* g = j->get("gamecube"); g && g->type == Json::Bool) p.gamecube = g->b;
     if (auto* a = j->get("automatic"); a && a->type == Json::Bool) p.saved_auto = a->b;
-    if (auto* a = j->get("previous"); a && a->type == Json::Arr && a->arr.size() == kActionCount) {
+    // a save from before the slow walk (issue #626) lists one action less: it had no controller input
+    if (auto* a = j->get("previous"); a && a->type == Json::Arr && (a->arr.size() == kActionCount || a->arr.size() == kSlowWalk)) {
         p.saved = true;
-        for (int i = 0; i < kActionCount; ++i) {
+        p.previous.fill(kPadNone);
+        for (int i = 0; i < (int)a->arr.size(); ++i) {
             const auto& v = a->arr[i];
             int b = v.type == Json::Str ? pad_from_id(v.s) : -1;
             if (b < 0) { p.saved = false; p.previous = {}; break; }
@@ -1375,6 +1389,11 @@ std::string to_json(const Mapping& m) {
     if (m.background_controllers) prompts += ",\n    \"background_controllers\": true";
     if (m.l_turns_page) prompts += ",\n    \"l_turns_gamepad_page\": true";
     if (!m.settings_pause_page) prompts += ",\n    \"settings_pause_page\": false";
+    if (m.slow_walk_share != kDefaultSlowWalk) {  // issue #626: older files and untouched ones stay without it
+        char share[64];
+        snprintf(share, sizeof share, ",\n    \"slow_walk_share\": %.3g", m.slow_walk_share);
+        prompts += share;
+    }
     char opt[320];
     snprintf(opt, sizeof opt,
              "  },\n  \"options\": {\n    \"format\": 2,\n    \"stick_deadzone\": %.3g,\n"
@@ -1507,6 +1526,8 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
             m.left_range = std::clamp((float)r->n, kMinStickRange, kMaxStickRange);
         if (const Json* r = op->get("right_stick_range"); r && r->type == Json::Num)
             m.right_range = std::clamp((float)r->n, kMinStickRange, kMaxStickRange);
+        if (const Json* r = op->get("slow_walk_share"); r && r->type == Json::Num)  // issue #626
+            m.slow_walk_share = std::clamp((float)r->n, kMinSlowWalk, kMaxSlowWalk);
         if (const Json* i = op->get("file_select_quit"); i && i->type == Json::Bool) m.file_select_quit = i->b;
         if (const Json* i = op->get("skip_controller_selection"); i && i->type == Json::Bool) m.skip_controller_selection = i->b;
         if (const Json* i = op->get("invert_camera_y"); i && i->type == Json::Bool) m.invert_camera_y = i->b;
@@ -1638,6 +1659,7 @@ static std::atomic<bool> g_file_select_quit{true};
 static std::atomic<bool> g_invert_camera_y{false};
 static std::atomic<bool> g_l_turns_page{false};
 static std::atomic<bool> g_settings_pause_page{true};
+static std::atomic<float> g_slow_walk_share{kDefaultSlowWalk};
 // format 1 (or no file) at startup: the old Jump anywhere button is still to be applied
 static std::mutex g_legacy_mu;
 static bool g_loaded = false, g_legacy = true;
@@ -1797,6 +1819,7 @@ void set_current(const Mapping& requested, bool save) {
     g_file_select_quit = m.file_select_quit;
     g_l_turns_page = m.l_turns_page;
     g_settings_pause_page = m.settings_pause_page;
+    g_slow_walk_share = m.slow_walk_share;
     g_gen++;
     if (save && !save_file(default_path(), m))
         fprintf(stderr, "[input] could not save controls to %s\n", default_path().c_str());
@@ -1808,6 +1831,7 @@ bool skip_controller_selection() { return g_skip_controller_selection.load(std::
 bool background_controllers() { return g_background_controllers.load(std::memory_order_relaxed); }
 bool invert_camera_y() { return g_invert_camera_y.load(std::memory_order_relaxed); }
 bool settings_pause_page() { return g_settings_pause_page.load(std::memory_order_relaxed); }
+float slow_walk_share() { return g_slow_walk_share.load(std::memory_order_relaxed); }
 bool l_turns_page() { return g_l_turns_page.load(std::memory_order_relaxed); }
 
 }  // namespace input_map

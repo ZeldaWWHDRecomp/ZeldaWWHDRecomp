@@ -2880,7 +2880,39 @@ void controller_row(bool tools = true) {
     }
 }
 
-// Jump anywhere and the moon jump: their own inputs (they never press the game's L)
+// Slow walk (issue #626): hold its input and the left stick (keys or a controller) walks at a share of
+// its tilt. Its own line under the jumps: a controller input and a key, and the share.
+void slow_walk_row(const input_map::Mapping& m) {
+    using namespace input_map;
+    ImGui::PushID("slowwalk");
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Slow walk (hold)");
+    for (int col : {(int)kColPad, (int)kColKey0}) {
+        std::string label = U.cap_action == kSlowWalk && (U.cap_col == col || U.cap_col == kColAny) ? std::string("Press...")
+                          : col == kColPad ? (m.pad[kSlowWalk] == kPadNone ? std::string("-") : std::string(pad_short_label(m.pad[kSlowWalk])))
+                                           : (m.keys[kSlowWalk][0] == kNoKey ? std::string("-") : key_short_label(m.keys[kSlowWalk][0]));
+        label += "##s" + std::to_string(col);
+        flow::next(flow::button(label.c_str()));
+        if (ImGui::Button(label.c_str()) && U.cap_action < 0) start_capture(kSlowWalk, col);
+        if (binding_clear_requested(U.cap_action >= 0 || U.capture_completed)) clear_binding(kSlowWalk, col);
+        help(col == kColPad ? "Controller input: press to change. A button the game uses asks what happens to its use."
+                            : "Key: press to change.");
+    }
+    float share = std::round(m.slow_walk_share * 100.0f);
+    const float width = flow::item_width(ImGui::GetFontSize() * 9, "Speed", ImGui::GetFontSize() * 6);
+    flow::next(flow::labeled(width, "Speed"));
+    ImGui::SetNextItemWidth(width);
+    if (ImGui::SliderFloat("Speed", &share, kMinSlowWalk * 100.0f, kMaxSlowWalk * 100.0f, "%.0f%%", ImGuiSliderFlags_AlwaysClamp)) {
+        input_map::Mapping e = edit_current();
+        e.slow_walk_share = std::clamp(std::round(share) / 100.0f, kMinSlowWalk, kMaxSlowWalk);
+        edit_set(e);
+    }
+    help("While the slow walk's input is held, the left stick (keys or a controller) moves Link at this share "
+         "of its tilt: a full tilt walks instead of running. Unbound by default.");
+    ImGui::PopID();
+}
+
+// Jump anywhere, the moon jump and the slow walk: their own inputs (they never press the game's L)
 void jump_row(const input_map::Mapping& m) {
     using namespace input_map;
     for (int a : {(int)kJump, (int)kMoonJump}) {
@@ -2905,6 +2937,7 @@ void jump_row(const input_map::Mapping& m) {
         flow::next(flow::text(mods::jump_anywhere() ? "(moon jump: Mods > Cheats)" : "(off: Mods > Jump anywhere)"));
         ImGui::TextDisabled("%s", mods::jump_anywhere() ? "(moon jump: Mods > Cheats)" : "(off: Mods > Jump anywhere)");
     }
+    slow_walk_row(m);
 }
 
 // The item ring (mods/item_ring.h): hold X, Y or R to pick an item. One switch (on for touch by default,

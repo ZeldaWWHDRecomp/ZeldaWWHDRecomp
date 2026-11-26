@@ -8,8 +8,9 @@
 //   - per-controller bindings: "controllers": [{"guid", "name", "controller": {...}}]. A controller
 //     uses the profile with its SDL GUID and name, else one with its GUID, else one with its name (a
 //     host without GUIDs, or the same model on another bus), else the shared "controller" bindings;
-//   - the virtual actions Jump and MoonJump (Jump anywhere, the moon jump): bound like Wii U buttons,
-//     never sent to the game (input::PadState::virt);
+//   - the virtual actions Jump and MoonJump (Jump anywhere, the moon jump) and SlowWalk (issue #626:
+//     held, the left stick walks at "slow_walk_share" of its tilt): bound like Wii U buttons, never sent
+//     to the game (input::PadState::virt);
 //   - "options": "l_turns_gamepad_page" (written only when on) and the controllers that asked not to
 //     be offered the controller setup again ("controller_setup_declined").
 // A format 1 file (no "version": 2) reads as before; its Jump and MoonJump take the inputs of the
@@ -34,10 +35,14 @@ enum Action : int {
     kRUp, kRDown, kRLeft, kRRight,   // right stick (camera)
     kScreenshot,                     // app action, not a GamePad input: save a screenshot (screenshot.h)
     kJump, kMoonJump,                // virtual inputs (input::kVirt*): Jump anywhere, the moon jump
+    kSlowWalk,                       // virtual input (issue #626): held, the left stick is scaled (apply_slow_walk)
     kActionCount
 };
 constexpr int kFirstVirtual = kJump;
-inline bool is_virtual(int a) { return a == kJump || a == kMoonJump; }
+inline bool is_virtual(int a) { return a == kJump || a == kMoonJump || a == kSlowWalk; }
+// Jump anywhere and the moon jump: one input may carry both (the moon jump wins while it is on); the slow
+// walk is held with other inputs, so it shares an input with neither
+inline bool is_jump(int a) { return a == kJump || a == kMoonJump; }
 // a Wii U button the game does not use while Link plays (L only turns the GamePad page, d-pad down
 // is free): a virtual action or a moved item button may share its input (see play_buttons)
 inline bool free_in_play(int a) { return a == kL || a == kDDown; }
@@ -80,6 +85,8 @@ int key_from_id(const std::string& id);  // kNoKey if unknown
 const char* reserved_key(int code);
 
 constexpr float kMinStickRange = 1.0f, kMaxStickRange = 1.5f;
+// Slow walk (issue #626): the share of the left stick's length while its input is held
+constexpr float kMinSlowWalk = 0.1f, kMaxSlowWalk = 0.9f, kDefaultSlowWalk = 0.3f;
 
 // Host actions share controls.json, but do not drive GamePad inputs.
 enum Shortcut { kSettings, kFullscreen, kPhoto, kQuit, kSave1, kSave2, kSave3, kSave4, kSave5,
@@ -123,6 +130,10 @@ struct Mapping {
     // so a worn stick that only reaches 0.9 delivers full deflection at about 1.11.
     float left_range = 1.0f;
     float right_range = 1.0f;
+    // Slow walk (issue #626): while kSlowWalk is held the left stick's final vector (after the dead zone
+    // and range) is scaled to this share, kMinSlowWalk..kMaxSlowWalk. "slow_walk_share", written when
+    // not the default.
+    float slow_walk_share = kDefaultSlowWalk;
     bool file_select_quit = true; // show the controller/mouse Quit button on file select
     bool skip_controller_selection = true; // title: choose the configured Wii U controller
     // Issue #267: controllers keep driving the game while no game window has the focus (a second
@@ -377,6 +388,11 @@ bool setup_offer_due(const Mapping& m, const std::string& guid, const std::strin
 // several controllers at once, each through its own bindings: buttons and virtual inputs add up,
 // each stick follows the controller that pushes it furthest
 input::PadState combine(const input::PadState& a, const input::PadState& b);
+// Slow walk (issue #626): with input::kVirtSlowWalk held, the left stick's length times `share` (clamped
+// to kMinSlowWalk..kMaxSlowWalk), direction kept. The hosts call it on the merged pad (keyboard, controllers,
+// touch), after the dead zone and range, before the game reads it.
+void apply_slow_walk(input::PadState& s, float share);
+float slow_walk_share();  // current().slow_walk_share, any thread (hosts poll it)
 
 // ---- virtual actions on game buttons (Jump anywhere, the moon jump) ----
 // Binding Jump or the moon jump to a controller input that a game button uses asks what happens to

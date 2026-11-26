@@ -346,6 +346,16 @@ void register_controls() {
         add(std::move(it));
     }
     {
+        Item it;  // issue #626: the share the held slow walk input leaves of the left stick
+        it.id = "controls.slow-walk", it.tab = "controls", it.label = "Slow walk speed", it.kind = Kind::Number;
+        it.help = "While the slow walk input is held (Settings > Controls), Link moves at this share of the stick's tilt.";
+        it.min = input_map::kMinSlowWalk, it.max = input_map::kMaxSlowWalk, it.step = 0.1f;
+        it.get = [] { return input_map::current().slow_walk_share; };
+        it.set = [](float v) { change_mapping([v](M& m) { m.slow_walk_share = std::clamp(std::round(v * 100.0f) / 100.0f, input_map::kMinSlowWalk, input_map::kMaxSlowWalk); }); };
+        it.format = percent;
+        add(std::move(it));
+    }
+    {
         Item it;
         it.id = "controls.skip-controller-selection", it.tab = "controls", it.label = "Skip controller selection", it.kind = Kind::Toggle;
         it.help = "At the title screen, choose the configured Wii U controller automatically.";

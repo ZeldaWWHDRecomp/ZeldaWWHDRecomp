@@ -2,6 +2,7 @@
 #include <SDL3/SDL.h>
 #include <atomic>
 #include <cassert>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -557,6 +558,18 @@ int main(int argc,char** argv){
  key(SDL_SCANCODE_W,true);assert(input::read().ly==1);
  key(SDL_SCANCODE_D,true);assert(input::read().lx>0.7f&&input::read().lx<0.71f);
  key(SDL_SCANCODE_LSHIFT,true);assert(input::read().buttons&input::kZL);
+ assert(input::read().lx>0.7f&&input::read().lx<0.71f);  // issue #626: Left Shift is ZL, not the slow walk (unbound)
+ {
+  // issue #626: the slow walk held on its key: the full-tilt keyboard diagonal walks at the share (30 %)
+  auto slow=input_map::Mapping::defaults();slow.keys[input_map::kSlowWalk]={input_map::key_from_id("G"),input_map::kNoKey};
+  input_map::set_current(slow,false);assert(input_map::slow_walk_share()==0.3f);
+  key(SDL_SCANCODE_G,true);auto p=input::read();
+  assert(std::abs(std::sqrt(p.lx*p.lx+p.ly*p.ly)-0.3f)<1e-4f&&std::abs(p.lx-p.ly)<1e-6f&&(p.virt&input::kVirtSlowWalk));
+  slow.slow_walk_share=0.6f;input_map::set_current(slow,false);p=input::read();
+  assert(std::abs(std::sqrt(p.lx*p.lx+p.ly*p.ly)-0.6f)<1e-4f);
+  key(SDL_SCANCODE_G,false);p=input::read();assert(std::abs(std::sqrt(p.lx*p.lx+p.ly*p.ly)-1.0f)<1e-4f);
+  input_map::set_current(input_map::Mapping::defaults(),false);
+ }
  const int resetsBeforeFocus=lockOnResets;
  quickUsePending=true;const int focusResets=quickUseResets;
  SDL_Event focus{};focus.type=SDL_EVENT_WINDOW_FOCUS_LOST;input::handle_event(focus);assert(input::read().buttons==0&&input::read().lx==0);
@@ -766,6 +779,14 @@ int main(int argc,char** argv){
   assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_DPAD_DOWN,true));
   auto reboundState=poll();assert(reboundState.buttons==0&&reboundState.ly==-1);
   assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_DPAD_DOWN,false));poll();
+  // issue #626: the slow walk on a controller input: the stick at full tilt (after dead zone and range) walks at the share
+  auto slow=input_map::Mapping::defaults();slow.pad[input_map::kSlowWalk]=input_map::kPadRightPaddle1;slow.left_range=1.5f;
+  input_map::set_current(slow,false);
+  assert(SDL_SetJoystickVirtualAxis(joystick,SDL_GAMEPAD_AXIS_LEFTX,32767));assert(std::abs(poll().lx-1.0f)<0.001f);
+  assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1,true));
+  auto slowState=poll();assert(std::abs(slowState.lx-0.3f)<0.001f&&slowState.ly==0&&slowState.buttons==0);
+  assert(SDL_SetJoystickVirtualButton(joystick,SDL_GAMEPAD_BUTTON_RIGHT_PADDLE1,false));assert(std::abs(poll().lx-1.0f)<0.001f);
+  assert(SDL_SetJoystickVirtualAxis(joystick,SDL_GAMEPAD_AXIS_LEFTX,0));poll();
   input_map::set_current(input_map::Mapping::defaults(),false);
   SDL_CloseJoystick(joystick);assert(SDL_DetachVirtualJoystick(id));poll();
  }

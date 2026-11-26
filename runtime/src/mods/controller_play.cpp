@@ -41,9 +41,10 @@ void pad_play_rules(input::PadState& p) {
         gen = g;
     }
     const uint32_t before = p.buttons;
-    // the virtual inputs that act: Jump while Jump anywhere is on, the moon jump while its cheat is on
+    // the virtual inputs that act: Jump while Jump anywhere is on, the moon jump while its cheat is on, the
+    // slow walk always (issue #626)
     const uint32_t acting = (jump_anywhere() ? p.virt & input::kVirtJump : 0) |
-                            (infinite(kMoonJump) ? p.virt & input::kVirtMoonJump : 0);
+                            (infinite(kMoonJump) ? p.virt & input::kVirtMoonJump : 0) | (p.virt & input::kVirtSlowWalk);
     p.buttons = input_map::play_buttons(m, p.buttons, in_play, acting);
     // debug: WWHD_PLAY_RULES_LOG=1 logs each change of what the rules hold back
     static const bool log = getenv("WWHD_PLAY_RULES_LOG") != nullptr;
