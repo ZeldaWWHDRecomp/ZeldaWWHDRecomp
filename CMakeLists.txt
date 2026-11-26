@@ -300,7 +300,7 @@ if(APPLE)
 elseif(ANDROID)
   list(APPEND RUNTIME_SOURCES runtime/src/platform/https_android.cpp runtime/src/platform/android_code_mods.cpp runtime/src/platform/android_documents.cpp)
 elseif(WIN32)
-  list(APPEND RUNTIME_SOURCES runtime/src/platform/https_win.cpp)
+  list(APPEND RUNTIME_SOURCES runtime/src/platform/https_win.cpp runtime/src/platform/windows_hdr.cpp)  # windows_hdr: the display HDR state from DXGI (issue #593)
 elseif(UNIX AND NOT ANDROID)
   # libcurl is loaded at run time (dlopen); only its headers are needed. They are copied on their own:
   # their directory (e.g. /usr/include/x86_64-linux-gnu) also holds the system's glibc headers, which

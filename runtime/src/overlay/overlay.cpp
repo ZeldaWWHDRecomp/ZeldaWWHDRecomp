@@ -310,6 +310,9 @@ void setup_style() {
     s.ItemSpacing = ImVec2(10, 7);
     s.WindowBorderSize = 1;
     s.FrameBorderSize = 1;  // unchecked boxes and radio buttons stay visible on the dark background
+    // Locked controls must look locked (issue #593): ImGui's 0.6 barely dims them, the more so as
+    // sRGB targets blend in linear light.
+    s.DisabledAlpha = 0.35f;
     s.WindowTitleAlign = ImVec2(0.5f, 0.5f);
     ImVec4* c = s.Colors;
     // deep sea blue with a teal accent
@@ -1153,18 +1156,30 @@ void tab_graphics() {
         ImGui::SameLine();
         // Report the active swapchain; Auto prefers scRGB (backend.cpp make_swapchain).
         const bool pq=hdr::enabled.load()?hdr::pqOutput.load():!hdr::scrgbSupported.load()&&hdr::pqSupported.load();
+        const bool display=hdr::displayEnabled.load(),formatOk=hdr::formatSupported.load();
         if(radio(restart?"HDR (after restart)":pq?"HDR (HDR10 PQ)":"HDR (scRGB)",chosen,
-                 restart||(hdr::displayEnabled.load()&&hdr::formatSupported.load())))
+                 restart||hdr::selectable(hdr::kWindowsHost,display,formatOk)))
             post_changed([] {hdr::enabled=true;hdr::fellBackToSdr=false;hostui::set("hdrEnabled","1");});
         if(restart)note("The game is running through XWayland, which has no HDR. Choose HDR and restart the game to use Wayland.");
         else {
             if(hdr::fellBackToSdr.load())note("HDR is unavailable on this display. Using SDR output.");
 #ifdef _WIN32
-            if(!hdr::displayEnabled.load())note("Enable HDR in Windows for the display containing this window.");
+            // Issue #593: Windows' own HDR state for this window's monitor (DXGI), not SDL's flag. HDR stays
+            // selectable whenever the GPU offers an HDR format; Windows shows it as SDR until HDR is on.
+            switch(hdr::availability_note(display,formatOk)) {
+            case hdr::Note::NoFormat: note("Your GPU driver offers neither scRGB nor HDR10 output for this window, so HDR can't be chosen."); break;
+            case hdr::Note::DisplayOff:
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.80f, 0.35f, 1.0f));
+                ImGui::TextWrapped("Windows reports HDR off for the display this window is on. You can still choose HDR, but it "
+                                   "will look like SDR until \"Use HDR\" is turned on for this display in Settings > System > Display.");
+                ImGui::PopStyleColor();
+                break;
+            case hdr::Note::None: break;
+            }
 #else
             if(!hdr::displayEnabled.load())note("Enable HDR in your compositor for the display containing this window.");
-#endif
             else if(!hdr::formatSupported.load())note("This Vulkan surface supports neither scRGB nor HDR10 PQ output.");
+#endif
         }
         auto slider=[](const char* label,const char* key,std::atomic<float>& setting,float lo,float hi,const char* fmt) {
             float v=setting.load();ImGui::SetNextItemWidth(260);
@@ -1194,7 +1209,12 @@ void tab_graphics() {
         if(autoPeak) {
             ImGui::Text("Peak brightness: %.0f nits",hdr::parameters().peak);
             if(!hdr::valid_automatic_peak(hdr::paperWhite.load(),hdr::headroom.load()))
+#ifdef _WIN32
+                note("The display reports no peak brightness above the Windows SDR content brightness. Auto uses "
+                     "1025 nits; disable Auto to set Peak manually.");
+#else
                 note("HDR headroom is unavailable. Auto uses 1025 nits; disable Auto to set Peak manually.");
+#endif
         }
         else {
             slider("Peak brightness","hdrPeak",hdr::peak,200,4000,"%.0f nits");

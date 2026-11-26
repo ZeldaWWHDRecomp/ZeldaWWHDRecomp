@@ -28,6 +28,16 @@ what is on `devel` and not released yet (also in the
   with a note: "Coloured face buttons" works with the Xbox and PlayStation looks (GameCube buttons always have their
   own colours), "Coloured face button text" with those and GameCube. In the in-game settings, the macOS Controls
   window and the item menu's settings page; the saved choices are kept.
+- **Windows: "HDR (scRGB)" can be chosen with Windows HDR on** (#593, thanks @jlchips). The game used SDL's "HDR
+  enabled" flag, which only means the monitor reports a peak brightness above the Windows SDR content brightness,
+  and which keeps the values of the monitor the window was created on. With Use HDR on, the HDR choice could stay
+  greyed out (hard to see in the menu style, so clicks seemed to do nothing) under the wrong hint "Enable HDR in
+  Windows". The game now asks Windows (DXGI) whether the monitor the window is on is in HDR mode, checks again when
+  the window moves to another monitor, displays change or the game regains focus, and lets you choose HDR whenever
+  the GPU offers scRGB or HDR10; with Use HDR off it shows a warning instead of locking the option. A saved HDR
+  choice is no longer switched to SDR at start because of SDL's flag. Dimmed (unavailable) controls in the settings
+  are now clearly dimmed. The `[HDR]` log lines name the display, its DXGI colour space, reported peak and SDR
+  white, and the headroom. See [docs/hdr.md](docs/hdr.md).
 
 ## v0.5.2
 

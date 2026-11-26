@@ -59,9 +59,46 @@ inline void fall_back_to_sdr() {
     enabled = false;
     fellBackToSdr = true;
 }
-inline bool resolve_output() {
+#ifdef _WIN32
+inline constexpr bool kWindowsHost = true;
+#else
+inline constexpr bool kWindowsHost = false;
+#endif
+// Issue #593. Windows: whether the window's monitor is in HDR mode comes from DXGI
+// (platform/windows_hdr.cpp), not from SDL's HDR flag, which only means "reported peak above SDR
+// white" and is not updated when the window moves to another monitor. Unknown: no DXGI output
+// matched the monitor (older Windows, remote sessions); SDL's flag is used then.
+enum class DisplayState { Unknown, Off, On };
+inline constexpr unsigned kDxgiColorSpaceG2084P2020 = 12; // DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020
+inline DisplayState dxgi_display_state(bool outputFound, unsigned colorSpace) {
+    if (!outputFound) return DisplayState::Unknown;
+    return colorSpace==kDxgiColorSpaceG2084P2020 ? DisplayState::On : DisplayState::Off;
+}
+struct WindowsDisplay { bool enabled; float headroom; };
+// headroom (Automatic peak brightness only) is SDL's formula, MaxLuminance / SDR white, but for the
+// monitor the window is on now; SDL's window value otherwise (also when Windows reports no SDR white).
+inline WindowsDisplay windows_display(DisplayState state, bool sdlEnabled, float sdlHeadroom,
+                                      float maxLuminance, float sdrWhiteNits) {
+    const bool on = state==DisplayState::On || (state==DisplayState::Unknown && sdlEnabled);
+    float ratio = sdlHeadroom;
+    if (state==DisplayState::On && std::isfinite(maxLuminance) && maxLuminance>0)
+        ratio = maxLuminance / (std::isfinite(sdrWhiteNits) && sdrWhiteNits>0 ? sdrWhiteNits : 80.0f);
+    return {on, ratio};
+}
+// Whether HDR output can be chosen and used. Windows: whenever the Vulkan surface offers an HDR
+// format; with the display in SDR mode the overlay warns instead (Windows then shows HDR content
+// as SDR). Linux: the display flag already includes format support (backend.cpp display_hdr_enabled).
+inline bool selectable(bool windows, bool display, bool format) {
+    return format && (windows || display);
+}
+enum class Note { None, NoFormat, DisplayOff };
+inline Note availability_note(bool display, bool format) {
+    if (!format) return Note::NoFormat;
+    return display ? Note::None : Note::DisplayOff;
+}
+inline bool resolve_output(bool windows = kWindowsHost) {
     if (!enabled.load()) return false;
-    if (displayEnabled.load() && formatSupported.load()) {
+    if (selectable(windows, displayEnabled.load(), formatSupported.load())) {
         fellBackToSdr = false;
         return true;
     }
@@ -70,7 +107,7 @@ inline bool resolve_output() {
 }
 inline std::atomic<float> paperWhite{240}, peak{1025}, exposure{-0.32f}, highlights{0.32f}, menuWhite{160};
 inline std::atomic<bool> peakAuto{true};
-inline std::atomic<float> headroom{0}; // SDL ratio relative to the desktop's SDR white
+inline std::atomic<float> headroom{0}; // peak / the desktop's SDR white (SDL, or DXGI on Windows)
 // Conservatively reject the signal-limit sentinel (~10000 / 203 = 49.26), independently of
 // the player's paper white. Round the cutoff down so rounded compositor reports are rejected too.
 inline constexpr float kHeadroomLimit = 49.0f;

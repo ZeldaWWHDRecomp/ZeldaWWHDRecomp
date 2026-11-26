@@ -95,6 +95,9 @@ extern "C" int __llvm_profile_write_file(void);
 #include <SDL3/SDL_vulkan.h>
 #endif
 #include "platform/display_rate.h"
+#if defined(_WIN32) && defined(WWHD_SDL_HOST)
+#include "platform/windows_hdr.h"
+#endif
 #include "platform/gaming_mode.h"
 #include "platform/host.h"
 #include "platform/perf_hint.h"
@@ -1802,20 +1805,81 @@ static bool async_present();
 // SDL_GetWindowProperties is main-thread-only. Cache native HDR properties at
 // window creation and on SDL display/HDR events; swapchain creation only reads atomics.
 static std::atomic<bool> sdlDisplayHdrEnabled{false};
-static void update_hdr_properties(SDL_Window* window) {
+// The display part of the [HDR] swapchain log line (main thread writes, render thread reads).
+static std::mutex hdrDisplayLogMutex;
+static std::string hdrDisplayLog;
+static void set_hdr_display_log(std::string line) {
+  std::lock_guard<std::mutex> guard(hdrDisplayLogMutex);
+  hdrDisplayLog=std::move(line);
+}
+static std::string hdr_display_log() {
+  std::lock_guard<std::mutex> guard(hdrDisplayLogMutex);
+  return hdrDisplayLog;
+}
+#ifdef _WIN32
+static windows_hdr::Display windowsDisplay;  // main thread
+static std::atomic<int> windowsDisplayState{int(hdr::DisplayState::Unknown)};
+#endif
+// Returns true when the display's HDR state or details changed.
+static bool update_hdr_properties(SDL_Window* window, bool force=true) {
   SDL_assert(SDL_IsMainThread());
   const auto properties=SDL_GetWindowProperties(window);
-  sdlDisplayHdrEnabled=SDL_GetBooleanProperty(properties,SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN,false);
-  hdr::headroom=SDL_GetFloatProperty(properties,SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT,0.0f);
+  const bool sdlEnabled=SDL_GetBooleanProperty(properties,SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN,false);
+  const float sdlHeadroom=SDL_GetFloatProperty(properties,SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT,0.0f);
+  const float sdlWhite=SDL_GetFloatProperty(properties,SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT,0.0f);
+  const SDL_DisplayID displayId=SDL_GetDisplayForWindow(window);
+  int displayIndex=-1;
+  if(int count=0;SDL_DisplayID* displays=SDL_GetDisplays(&count)) {
+    for(int i=0;i<count;++i)if(displays[i]==displayId)displayIndex=i;
+    SDL_free(displays);
+  }
+  const char* sdlName=displayId?SDL_GetDisplayName(displayId):nullptr;
+  const bool sdlChanged=sdlDisplayHdrEnabled.exchange(sdlEnabled)!=sdlEnabled;
+  char line[640];
+#ifdef _WIN32
+  // Issue #593: SDL's flag means "peak above SDR white" and its window values stay those of the
+  // monitor the window was created on. Decide from DXGI for the monitor the window is on now.
+  void* hwnd=SDL_GetPointerProperty(properties,SDL_PROP_WINDOW_WIN32_HWND_POINTER,nullptr);
+  const bool dxgiChanged=hwnd&&windows_hdr::refresh(hwnd,force,windowsDisplay);
+  if(!hwnd)windowsDisplay=windows_hdr::Display{};
+  const auto& d=windowsDisplay;
+  const auto state=hdr::dxgi_display_state(d.found,d.colorSpace);
+  windowsDisplayState=int(state);
+  const auto decision=hdr::windows_display(state,sdlEnabled,sdlHeadroom,d.maxLuminance,d.sdrWhite);
+  hdr::headroom=decision.headroom;
+  snprintf(line,sizeof line,
+           "display %d \"%s\" (%s, %s, adapter %s); DXGI colour space %s%s; MaxLuminance %.0f nits, "
+           "full frame %.0f, min %.4f, %u bits; SDR white %s; headroom %.2f (SDL %.2f, SDL HDR flag %s, SDL SDR white x%.2f); "
+           "display HDR %s",
+           displayIndex,sdlName?sdlName:"?",d.monitor.empty()?"?":d.monitor.c_str(),d.device.empty()?"?":d.device.c_str(),
+           d.adapter.empty()?"?":d.adapter.c_str(),d.found?windows_hdr::color_space_name(d.colorSpace):"unavailable",
+           d.found?"":" (no DXGI output for this monitor; using SDL's flag)",d.maxLuminance,d.maxFullFrameLuminance,
+           d.minLuminance,d.bitsPerColor,d.sdrWhite>0?(std::to_string(int(d.sdrWhite+0.5f))+" nits").c_str():"unknown",
+           decision.headroom,sdlHeadroom,sdlEnabled?"on":"off",sdlWhite,
+           state==hdr::DisplayState::On?"on (Windows HDR)":state==hdr::DisplayState::Off?"off (Windows HDR off for this display)":
+           decision.enabled?"on (SDL)":"off (SDL)");
+  const bool changed=dxgiChanged||sdlChanged;
+#else
+  hdr::headroom=sdlHeadroom;
+  snprintf(line,sizeof line,"display %d \"%s\"; SDL HDR flag %s, headroom %.2f, SDR white x%.2f",
+           displayIndex,sdlName?sdlName:"?",sdlEnabled?"on":"off",sdlHeadroom,sdlWhite);
+  const bool changed=sdlChanged;
+#endif
+  const bool lineChanged=hdr_display_log()!=line;
+  set_hdr_display_log(line);
+  if(lineChanged)LOG("[HDR] %s",line);
+  return changed;
 }
-// Whether the display can show HDR. Linux: wlroots compositors (sway) give every surface an
+// Whether the display can show HDR. Windows: from DXGI (above), SDL's flag only when DXGI has no
+// output for the monitor. Linux: wlroots compositors (sway) give every surface an
 // sRGB preferred image description even on PQ outputs, so SDL may not report HDR there; Mesa
 // offers the HDR colour spaces only when the compositor accepts them, so those count too.
 // The HDR choice itself stays explicit. Safe to call from the render thread.
 static bool display_hdr_enabled() {
   const bool sdl=sdlDisplayHdrEnabled.load();
 #ifdef _WIN32
-  return sdl;
+  const auto state=static_cast<hdr::DisplayState>(windowsDisplayState.load());
+  return state==hdr::DisplayState::On || (state==hdr::DisplayState::Unknown && sdl);
 #else
   return sdl||hdr::formatSupported.load();
 #endif
@@ -2053,9 +2117,16 @@ static void make_swapchain(Screen &s) {
   s.hdrCompositionReady = false;
   if(&s==&R.tv) {
     hdr::pqOutput=wantPq;
-    LOG("[HDR] output %s; scRGB format %s; HDR10 PQ format %s; display HDR %s",
+#if defined(WWHD_SDL_HOST) && defined(WWHD_HDR_OUTPUT)
+    const std::string display=hdr_display_log();
+#else
+    const std::string display;
+#endif
+    LOG("[HDR] output %s; scRGB format %s; HDR10 PQ format %s; display HDR %s; HDR choice %s%s%s",
         wantPq?"HDR10 PQ":wantHdr?"scRGB FP16":"SDR",hdr::scrgbSupported.load()?"supported":"unavailable",
-        hdr::pqSupported.load()?"supported":"unavailable",hdr::displayEnabled.load()?"enabled":"disabled");
+        hdr::pqSupported.load()?"supported":"unavailable",hdr::displayEnabled.load()?"enabled":"disabled",
+        hdr::selectable(hdr::kWindowsHost,hdr::displayEnabled.load(),hdr::formatSupported.load())?"available":"unavailable",
+        display.empty()?"":"; ",display.c_str());
   }
   s.swapExtent = extent;
   vkGetSwapchainImagesKHR(R.device, sc, &n, nullptr);
@@ -6205,8 +6276,14 @@ void run_main_loop() {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
 #ifdef WWHD_HDR_OUTPUT
-      if((event.type==SDL_EVENT_WINDOW_HDR_STATE_CHANGED || event.type==SDL_EVENT_WINDOW_DISPLAY_CHANGED) &&
-         event.window.windowID==SDL_GetWindowID(R.tv.window)) {
+      // Re-check when the window moves to another monitor, its HDR state changes, displays are
+      // added, removed or reconfigured, or the window regains focus (after changing Windows'
+      // display settings); also polled below.
+      const bool tvWindowEvent=event.type>=SDL_EVENT_WINDOW_FIRST && event.type<=SDL_EVENT_WINDOW_LAST &&
+                               event.window.windowID==SDL_GetWindowID(R.tv.window);
+      if((tvWindowEvent && (event.type==SDL_EVENT_WINDOW_HDR_STATE_CHANGED || event.type==SDL_EVENT_WINDOW_DISPLAY_CHANGED ||
+                            event.type==SDL_EVENT_WINDOW_FOCUS_GAINED)) ||
+         (event.type>=SDL_EVENT_DISPLAY_FIRST && event.type<=SDL_EVENT_DISPLAY_LAST)) {
         // Auto Peak and metadata follow headroom changes without recreating the swapchain.
         update_hdr_properties(R.tv.window);
         const bool enabled=display_hdr_enabled();
@@ -6285,6 +6362,14 @@ void run_main_loop() {
     if (now - polled >= std::chrono::milliseconds(500) || polled == now) {
       polled = now;
       display_rate::poll(R.tv.window);
+#if defined(WWHD_HDR_OUTPUT) && defined(_WIN32)
+      // Windows HDR switched in Settings may reach the game without an SDL event. Cheap unless
+      // the monitor or the DXGI display configuration changed (windows_hdr::refresh).
+      if(update_hdr_properties(R.tv.window,false)) {
+        const bool enabled=display_hdr_enabled();
+        if(hdr::displayEnabled.exchange(enabled)!=enabled)R.tv.resize=true;
+      }
+#endif
     }
     if (elapsed >= 0.5 && !input::text_prompt_active()) {
       uint64_t frames = gx2::flips_presented();
