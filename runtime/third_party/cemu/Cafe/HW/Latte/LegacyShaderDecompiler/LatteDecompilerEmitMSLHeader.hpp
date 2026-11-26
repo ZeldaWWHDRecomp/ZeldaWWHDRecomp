@@ -143,6 +143,16 @@ namespace LatteDecompiler
 			uniformOffsets.offset_texLodBias[t] = uniformCurrentOffset;
 			uniformCurrentOffset += 4;
 		}
+		// WWHD: sharper text gain (gfx/sharp_text.h); after the LOD biases, so every member above keeps its offset
+		for (sint32 t = 0; t < LATTE_NUM_MAX_TEX_UNITS; t++)
+		{
+			if (!decompilerContext->analyzer.texUnitUsesSharpText.test(t))
+				continue;
+			uniformCurrentOffset = (uniformCurrentOffset + 3) & ~3;
+			src->addFmt("float tex{}Sharp;" _CRLF, t);
+			uniformOffsets.offset_texSharp[t] = uniformCurrentOffset;
+			uniformCurrentOffset += 4;
+		}
 
 		src->add("};" _CRLF _CRLF);
 

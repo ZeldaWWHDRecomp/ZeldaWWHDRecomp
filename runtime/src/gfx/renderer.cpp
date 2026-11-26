@@ -92,6 +92,13 @@ std::atomic<bool> g_full_light{[] {
 }()};
 bool full_light() { return g_full_light.load(std::memory_order_relaxed); }
 void set_full_light(bool on) { g_full_light.store(on, std::memory_order_relaxed); }
+// Sharper text: on by default; a saved choice or WWHD_SHARP_TEXT wins (gfx/sharp_text.h)
+std::atomic<bool> g_sharp_text{[] {
+    const char* e = std::getenv("WWHD_SHARP_TEXT");
+    return e ? std::strcmp(e, "0") != 0 : true;
+}()};
+bool sharp_text() { return g_sharp_text.load(std::memory_order_relaxed); }
+void set_sharp_text(bool on) { g_sharp_text.store(on, std::memory_order_relaxed); }
 void set_cloud_shadows(bool on) { g_cloud_shadows.store(on, std::memory_order_relaxed); }
 float horizon_haze() { return g_haze.load(std::memory_order_relaxed); }
 void set_horizon_haze(float v) {

@@ -14,6 +14,7 @@ extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relev
 // MSL the decompiler emits (as used by Cemu's Metal renderer).
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "gfx/area_sample.h"
+#include "gfx/sharp_text.h"
 #include "gfx/msl_depth_output.h"
 #include "gfx/sampler_lod_bias.h"
 #include "gfx/shader_linkage.h"
@@ -873,6 +874,7 @@ static LatteDecompilerShader* translate_msl(const uint32_t* regs, bool vertex, L
     const auto fixes = vertex ? gfx::area_sample::Program{} : gfx::area_sample::pixel_program(mem::ptr(addr), size);
     opt.areaSampledTextures = fixes.units;
     opt.emulateSamplerLodBias = true;  // Metal samplers have no LOD bias (gfx/sampler_lod_bias.h)
+    opt.sharpTextTextures = vertex ? 0 : gfx::sharp_text::pixel_units(mem::ptr(addr), size);  // (gfx/sharp_text.h)
     // the GPU's MUL/MULADD give 0*anything=0 (rsqrt(0)*0 is NaN otherwise: black letter in the Rito
     // mail sorting game); Cemu's default too. WWHD_STRICT_MUL=0 turns it off for comparisons
     static const bool strictMul = !getenv("WWHD_STRICT_MUL") || strcmp(getenv("WWHD_STRICT_MUL"), "0");
@@ -895,6 +897,15 @@ static LatteDecompilerShader* translate_msl(const uint32_t* regs, bool vertex, L
             dec->strBuf_shaderSource->add(std::string_view(src));
         } else {
             LOG("[gfx] pixel shader %08X: upscaling fix not applied", addr);
+        }
+    }
+    if (opt.sharpTextTextures) {
+        std::string src = dec->strBuf_shaderSource->c_str();
+        if (gfx::sharp_text::rewrite(src, opt.sharpTextTextures, true) > 0) {
+            dec->strBuf_shaderSource->reset();
+            dec->strBuf_shaderSource->add(std::string_view(src));
+        } else {
+            LOG("[gfx] pixel shader %08X: sharper text not applied", addr);
         }
     }
     return dec;
@@ -1759,6 +1770,22 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
             *at(dec->uniform.loc_texLodBias[t]) =
                 (add ? gfx::sampler_lod_bias::host(regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (samplerIdx + samplerBase) * 3 + 1]) : 0.0f) +
                 (artistic[t] ? artisticBias : 0.0f);
+        }
+        // sharper text: the target's scale for a glyph sheet (gfx/sharp_text.h)
+        for (int t = 0; !vertex && t < 18; t++) {
+            if (dec->uniform.loc_texSharp[t] < 0) continue;
+            const uint32_t* tw = &regs[REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + t * 7];
+            const bool sheet = gfx::sharp_text::glyph_sheet(tw);
+            const float gain = gfx::sharp_text::gain(render::sharp_text(), sheet, g_target_kx, g_target_ky);
+            *at(dec->uniform.loc_texSharp[t]) = gain;
+            static const bool logText = getenv("WWHD_SHARP_TEXT_LOG") != nullptr;
+            if (logText) {
+                static std::unordered_set<uint64_t> seen;
+                const uint32_t key[4] = {regs[mmSQ_PGM_START_PS], tw[2], tw[4], (uint32_t)(gain * 64.0f)};
+                if (seen.insert(hash_bytes(key, sizeof key)).second)
+                    LOG("[sharp text] PS %08X tex%d %08X fmt %02X dim %u sel %03X: %s, gain %.2f", regs[mmSQ_PGM_START_PS] << 8, t,
+                        tw[2] << 8, tw[1] >> 26, tw[0] & 7, (tw[4] >> 16) & 0xFFF, sheet ? "glyph sheet" : "not a glyph sheet", gain);
+            }
         }
         for (int t = 0; t < 18; t++) {
             if (dec->uniform.loc_framebufferFetchSize[t] < 0) continue;

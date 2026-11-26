@@ -2592,6 +2592,11 @@ target_compile_options(guest_hud_test PRIVATE -UNDEBUG)
 target_link_libraries(guest_hud_test PRIVATE Threads::Threads)
 add_test(NAME guest_hud COMMAND guest_hud_test)
 
+add_executable(sharp_text_test runtime/tools/sharp_text_test.cpp)
+target_include_directories(sharp_text_test PRIVATE runtime/src)
+target_compile_options(sharp_text_test PRIVATE -UNDEBUG)
+add_test(NAME sharp_text COMMAND sharp_text_test)
+
 add_executable(guest_hud_renderer_test runtime/tools/guest_hud_renderer_test.cpp runtime/src/overlay/guest_hud.cpp)
 target_include_directories(guest_hud_renderer_test PRIVATE runtime/src)
 target_compile_options(guest_hud_renderer_test PRIVATE -UNDEBUG)
