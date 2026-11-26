@@ -5,8 +5,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#if defined(__has_include)
+#if __has_include(<execinfo.h>) && __has_include(<dlfcn.h>)
 #include <dlfcn.h>
 #include <execinfo.h>
+#define WWHD_T60_RND_HBT 1  // (the host chain; no execinfo / dlfcn on Windows)
+#endif
+#endif
 #include "ppc.h"
 #include "t60.h"
 
@@ -17,6 +22,7 @@ void t60_rnd_log_extra(FILE* f, unsigned long long logic_step) {
     // WWHD_RND_HBT=STEP: from that logic step on (a chain per call slows the boot past the scenario's start timeout)
     static const unsigned long long hbt = getenv("WWHD_RND_HBT") ? strtoull(getenv("WWHD_RND_HBT"), nullptr, 0) : 0;
     if (!hbt || logic_step < hbt) return;
+#ifdef WWHD_T60_RND_HBT
     void* bt[14];
     int n = backtrace(bt, 14);
     fprintf(f, " |");
@@ -27,4 +33,7 @@ void t60_rnd_log_extra(FILE* f, unsigned long long logic_step) {
         if (!strncmp(s, "_ZN4gabi", 8) || !strcmp(s, "ppc_host_call") || !strncmp(s, "hook", 4)) continue;
         fprintf(f, " %.60s+%lx", s, di.dli_saddr ? (unsigned long)((char*)bt[i] - (char*)di.dli_saddr) : 0ul);
     }
+#else
+    fprintf(f, " | (no host call chain on this platform)");
+#endif
 }
