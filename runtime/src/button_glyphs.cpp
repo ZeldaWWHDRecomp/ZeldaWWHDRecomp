@@ -81,7 +81,8 @@ uint32_t signature(const PromptStyle& s) {
     uint32_t buttons = 0;
     for (int i = 0; i < 4; ++i) buttons |= uint32_t(s.buttons[i]) << (10 + 2*i) | uint32_t(s.spots[i]) << (18 + 2*i);
     return buttons | 0x100u | (uint32_t)s.face | (s.colours ? 8u : 0u) | (uint32_t)s.shoulders << 4 |
-           (s.positions ? 0x40u : 0u) | (s.text_colours ? 0x80u : 0u);
+           (s.positions ? 0x40u : 0u) | (s.text_colours ? 0x80u : 0u) |
+           (s.gamecube_colours ? 0x200u : 0u);
 }
 
 PromptStyle style() {
@@ -466,8 +467,8 @@ int shoulder_box(uint32_t box) {
     return length == 2 && ld16(text) == 'Z' && ld16(text + 2) == letter ? shoulder : -1;
 }
 
-void tint_word(std::vector<Held>& saved, uint32_t address, int face) {
-    shared_patch::hold(saved, address, 4, [face](uint32_t rgba) { return button_glyphs::tint(rgba, face); });
+void tint_word(std::vector<Held>& saved, uint32_t address, int face, bool gamecube) {
+    shared_patch::hold(saved, address, 4, [face, gamecube](uint32_t rgba) { return button_glyphs::tint(rgba, face, gamecube); });
 }
 
 void restore(std::vector<Held>& saved) { shared_patch::release(saved); }
@@ -1050,7 +1051,7 @@ extern "C" void hook_028F7C7C(Cpu* c) {
             const uint32_t rgb = gc_shoulder_word ? (button==1 ? button_glyphs::kGameCubeZ : button_glyphs::kGameCubeShoulder)
                               : look.face == FaceStyle::kPlayStation ? button_glyphs::kShapeColours[button]
                               : look.face == FaceStyle::kGameCube ? button_glyphs::gamecube_colour(button)
-                              : button_glyphs::colour(button);
+                              : button_glyphs::colour(button, look.gamecube_colours);
             for (uint32_t offset : {0x10u, 0x14u})
                 shared_patch::hold(saved, quad + offset, 4, [rgb,gc_shoulder_word](uint32_t ink) {
                     uint32_t tinted = ink & 255;
@@ -1064,8 +1065,8 @@ extern "C" void hook_028F7C7C(Cpu* c) {
         if (mark) set_flag_byte(quad + 0x2F, button_glyphs::rendered(ld8(quad + 0x2F), active));
         if (face >= 0 && hud_face < 0) {  // dialog/icon-font glyphs; HUD letters keep their ink
             if (look.face == FaceStyle::kXbox && look.colours) {
-                tint_word(saved, quad + 0x10, look.buttons[face]);
-                tint_word(saved, quad + 0x14, look.buttons[face]);
+                tint_word(saved, quad + 0x10, look.buttons[face], look.gamecube_colours);
+                tint_word(saved, quad + 0x14, look.buttons[face], look.gamecube_colours);
             } else if (shape_ready) {
                 atlas_quad(saved, quad, look.face == FaceStyle::kGameCube ? button_glyphs::gamecube_row(face)
                                : button_glyphs::shape_row(look.buttons[face], look.colours), true, c);
@@ -1120,9 +1121,10 @@ extern "C" void hook_02874D54(Cpu* c) {
             shared_patch::hold(held, picture + 0xA8 + 4 * i, 4, [](uint32_t rgba) { return rgba & 0xFFFFFF00u; });
     } else if (look.face == FaceStyle::kXbox) {
         const int button = look.buttons[face];
+        const bool gamecube = look.gamecube_colours;
         for (uint32_t i = 0; i < 4; i++)
-            shared_patch::hold(held, picture + 0xA8 + 4 * i, 4, [button](uint32_t rgba) {
-                return button_glyphs::tint(rgba, button);
+            shared_patch::hold(held, picture + 0xA8 + 4 * i, 4, [button, gamecube](uint32_t rgba) {
+                return button_glyphs::tint(rgba, button, gamecube);
             });
     }
     f_02874D54_orig(c);

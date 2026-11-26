@@ -56,10 +56,11 @@ inline std::vector<uint32_t> codes(const std::string& s) {
 }
 
 // How the button pictures look (input_map::prompt_style, as the game's own prompts are restyled by
-// button_glyphs.cpp): the game's icon, the icon in the Xbox colours, or the PlayStation shapes.
+// button_glyphs.cpp): the game's icon, the icon in the Xbox (or GameCube) colours, or the PlayStation shapes.
 struct Prompts {
     enum Face : uint8_t { Original, Xbox, PlayStation, GameCube } face = Original;
     bool colours = false;
+    bool gamecube_colours = false;  // Xbox: the GameCube palette (Face button colours: GameCube, #584)
     std::array<int, 4> buttons = {0, 1, 2, 3};
     bool operator==(const Prompts&) const = default;
 };
@@ -122,7 +123,8 @@ inline game_glyph::Bitmap button_picture(const game_glyph::Glyph* icon, int face
     if (look.face == Prompts::Xbox && look.colours)  // multiplied like the game's vertex colours (button_glyphs::tint)
         for (size_t i = 0; i + 3 < out.rgba.size(); i += 4) {
             const uint32_t t = button_glyphs::tint(uint32_t(out.rgba[i]) << 24 | uint32_t(out.rgba[i + 1]) << 16 |
-                                                       uint32_t(out.rgba[i + 2]) << 8 | out.rgba[i + 3], face);
+                                                       uint32_t(out.rgba[i + 2]) << 8 | out.rgba[i + 3], face,
+                                                   look.gamecube_colours);
             out.rgba[i] = t >> 24, out.rgba[i + 1] = t >> 16, out.rgba[i + 2] = t >> 8;
         }
     return out;

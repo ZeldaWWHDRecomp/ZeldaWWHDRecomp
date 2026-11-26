@@ -484,7 +484,8 @@ static void test_prompts() {
     CHECK(pad_family_from_labels(none) == PadFamily::kUnknown);
 
     Mapping m = Mapping::defaults();
-    CHECK(m.prompts == Mapping::Prompts::kAuto && m.shoulder_names == Mapping::ShoulderNames::kAuto && m.prompt_colours && m.prompt_text_colours);
+    CHECK(m.prompts == Mapping::Prompts::kAuto && m.shoulder_names == Mapping::ShoulderNames::kAuto && m.face_colours == Mapping::FaceColours::kXbox &&
+          m.prompt_text_colours);
     // Full layout x appearance x family matrix. Automatic layout is resolved from labels.
     for (int layout = 0; layout < 4; ++layout)
         for (auto prompts : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal,
@@ -561,10 +562,28 @@ static void test_prompts() {
     s = prompt_style(m, PadFamily::kPlayStation);
     CHECK(s.face == FaceStyle::kPlayStation && s.colours && s.positions && s.shoulders == ShoulderStyle::kNumbered);
     // white buttons at the Xbox positions (#143 a)
-    m.prompt_colours = false;
+    m.face_colours = Mapping::FaceColours::kOff;
     s = prompt_style(m, PadFamily::kXbox);
-    CHECK(s.face == FaceStyle::kXbox && !s.colours && s.positions);
-    m.prompt_colours = true;
+    CHECK(s.face == FaceStyle::kXbox && !s.colours && !s.gamecube_colours && s.positions);
+    // #584: Face button colours: GameCube keeps the Xbox letters and positions in the GameCube palette;
+    // the PlayStation shapes keep their own colours (on, no palette), the GameCube look its own
+    m.face_colours = Mapping::FaceColours::kGameCube;
+    s = prompt_style(m, PadFamily::kXbox);
+    CHECK(s.face == FaceStyle::kXbox && s.colours && s.gamecube_colours && s.positions && s.shoulders == ShoulderStyle::kXbox);
+    {
+        Mapping x = m;
+        x.face_colours = Mapping::FaceColours::kXbox;
+        const PromptStyle xs = prompt_style(x, PadFamily::kXbox);  // the same letters and spots as the Xbox colours
+        CHECK(s.buttons == xs.buttons && s.spots == xs.spots && s != xs && !face_colours_shapes(m, s));
+    }
+    s = prompt_style(m, PadFamily::kPlayStation);
+    CHECK(s.face == FaceStyle::kPlayStation && s.colours && !s.gamecube_colours && face_colours_shapes(m, s));
+    m.face_colours = Mapping::FaceColours::kXbox;
+    s = prompt_style(m, PadFamily::kXbox);
+    CHECK(s.colours && !s.gamecube_colours && !face_colours_shapes(m, prompt_style(m, PadFamily::kPlayStation)));
+    CHECK(std::string(face_colours_label(Mapping::FaceColours::kOff)) == "Off" &&
+          std::string(face_colours_label(Mapping::FaceColours::kXbox)) == "Xbox" &&
+          std::string(face_colours_label(Mapping::FaceColours::kGameCube)) == "GameCube");
     // fixed choices
     m.prompts = Mapping::Prompts::kPlayStation;
     CHECK(prompt_style(m, PadFamily::kXbox).face == FaceStyle::kPlayStation);
@@ -574,7 +593,7 @@ static void test_prompts() {
     s = prompt_style(m, PadFamily::kXbox);
     CHECK(!s.active() && !s.positions && !s.colours);
     // the colour options are dimmed where the resolved look ignores them (#584); the saved choice stays
-    CHECK(!face_colours_apply(s) && !text_colours_apply(s) && m.prompt_colours && m.prompt_text_colours);
+    CHECK(!face_colours_apply(s) && !text_colours_apply(s) && m.face_colours == Mapping::FaceColours::kXbox && m.prompt_text_colours);
     {
         Mapping c = m;
         for (auto [p, icons, text] : {std::tuple{Mapping::Prompts::kXbox, true, true}, std::tuple{Mapping::Prompts::kPlayStation, true, true},
@@ -585,7 +604,8 @@ static void test_prompts() {
             CHECK(face_colours_apply(r) == icons && text_colours_apply(r) == text);
             // where they apply they change the look (GameCube keeps the icon flag, its art ignores it)
             Mapping off = c;
-            off.prompt_colours = off.prompt_text_colours = false;
+            off.face_colours = Mapping::FaceColours::kOff;
+            off.prompt_text_colours = false;
             const PromptStyle o = prompt_style(off, PadFamily::kXbox);
             CHECK((r.colours != o.colours) == (icons || p == Mapping::Prompts::kGameCube));
             CHECK((r.text_colours != o.text_colours) == text);
@@ -616,20 +636,46 @@ static void test_prompts() {
     for (auto p : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal, Mapping::Prompts::kXbox, Mapping::Prompts::kPlayStation, Mapping::Prompts::kGameCube})
         for (auto n : {Mapping::ShoulderNames::kAuto, Mapping::ShoulderNames::kNintendo, Mapping::ShoulderNames::kNumbered,
                        Mapping::ShoulderNames::kXbox})
-            for (bool c : {true, false}) for (bool text : {true, false}) {
+            for (auto c : {Mapping::FaceColours::kOff, Mapping::FaceColours::kXbox, Mapping::FaceColours::kGameCube})
+            for (bool text : {true, false}) {
                 Mapping w = d, r;
                 w.prompts = p;
                 w.shoulder_names = n;
-                w.prompt_colours = c;
+                w.face_colours = c;
                 w.prompt_text_colours = text;
                 const auto style = prompt_style(w, PadFamily::kXbox);
                 // Original prompts keep the game's words whatever the setting, and stay inactive.
                 CHECK(style.text_colours == (text && style.face != FaceStyle::kOriginal));
                 if (style.face == FaceStyle::kOriginal)
                     CHECK(style.active() == (style.shoulders != ShoulderStyle::kOriginal));
+                // the GameCube palette only on the Xbox look
+                CHECK(style.gamecube_colours == (c == Mapping::FaceColours::kGameCube && style.face == FaceStyle::kXbox));
                 std::string err;
                 CHECK(from_json(to_json(w), r, &err) && err.empty() && r == w);
             }
+    // #584: controls files from before the choice: "button_colours" true reads as Xbox, false as Off;
+    // "face_colours" wins over it; Off still writes the old key (an older build reads it as off), the
+    // default writes neither
+    {
+        CHECK(plain.find("face_colours") == std::string::npos);
+        Mapping old;
+        std::string e;
+        CHECK(from_json("{\"options\": {\"button_colours\": false}}", old, &e) && e.empty() &&
+              old.face_colours == Mapping::FaceColours::kOff);
+        CHECK(from_json("{\"options\": {\"button_colours\": true}}", old, &e) && e.empty() &&
+              old.face_colours == Mapping::FaceColours::kXbox);
+        CHECK(from_json("{\"options\": {\"button_colours\": false, \"face_colours\": \"gamecube\"}}", old, &e) && e.empty() &&
+              old.face_colours == Mapping::FaceColours::kGameCube);
+        CHECK(from_json("{\"options\": {\"face_colours\": \"neon\"}}", old, &e) && !e.empty() &&
+              old.face_colours == Mapping::FaceColours::kXbox);
+        Mapping w = d;
+        w.face_colours = Mapping::FaceColours::kOff;
+        const std::string off = to_json(w);
+        CHECK(off.find("\"face_colours\": \"off\"") != std::string::npos && off.find("\"button_colours\": false") != std::string::npos);
+        w.face_colours = Mapping::FaceColours::kGameCube;
+        const std::string gc = to_json(w);
+        CHECK(gc.find("\"face_colours\": \"gamecube\"") != std::string::npos && gc.find("button_colours") == std::string::npos);
+    }
     Mapping r;
     std::string err;
     CHECK(from_json("{\"options\": {\"button_prompts\": \"sega\", \"shoulder_names\": 3}}", r, &err));

@@ -379,6 +379,12 @@ int main() {
         for (const char* w : words)
             for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
         assert(game_settings_text::tr("Graphics", 3) == "Grafik");
+        // #584: the Controls tab's Face button colours choice and the text option's help are translated
+        for (const char* w : {"Face button colours", "Xbox colours, or the Xbox letters in GameCube colours (green A, red B, grey X and Y).",
+                              "Coloured face button text",
+                              "Xbox, PlayStation and GameCube action words in their button's colour; off keeps the game's white.", "Off"})
+            for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
+        assert(game_settings_text::tr("Face button colours", 3) == "Farben der Aktionstasten");
     }
     std::puts("game_settings_page_test: ok");
 }

@@ -23,7 +23,12 @@ its labels remain visible in front of large item pictures. Messages and menu pro
 same button style. The item menu's OK and Back prompts stay close together to fit its Wii U
 layout, and the item ring keeps its existing layout.
 
-**Coloured face buttons** controls the button pictures. **Coloured face button text** controls
+**Face button colours** controls the button pictures: *Xbox* (green A, red B, blue X, yellow Y),
+*GameCube* (the Xbox letters and layout in the GameCube look's colours: green A, red B, grey X and Y)
+or *Off* (the game's white buttons, still at the Xbox positions). The choice is for the Xbox look:
+the PlayStation shapes keep their own colours with Xbox and GameCube (no pad has GameCube-coloured
+shapes, and the settings say so), and the GameCube look always has its own colours.
+**Coloured face button text** controls
 the colours of action words such as “Roll” and “Attack,” including GameCube shoulder actions
 such as “Defend.” Turn the text option off to keep the game's usual word colours. Original
 prompts always keep the game's usual colours.

@@ -38,8 +38,9 @@ using namespace input_map;
 
 static NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_str()]; }
 static NSString* ns(const char* s) { return [NSString stringWithUTF8String:s]; }
-static NSString* const kPromptColoursTip = @"Green A, red B, blue X and yellow Y in the Xbox look; coloured shapes in the PlayStation look. "
-                                           @"Off: the game's white buttons, still placed where the bound buttons sit on the pad.";
+static NSString* const kPromptColoursTip = @"Xbox: green A, red B, blue X and yellow Y in the Xbox look. GameCube: the Xbox letters and layout "
+                                           @"in the GameCube colours (green A, red B, grey X and Y). The PlayStation shapes keep their own colours "
+                                           @"with either. Off: the game's white buttons, still placed where the bound buttons sit on the pad.";
 static NSString* const kPromptTextColoursTip = @"Action text follows the mapped button's prompt colour, independently of icon colours. "
                                                @"Off: the game's own text colours (white).";
 
@@ -244,7 +245,8 @@ struct UIState {
 @property(strong) NSButton* skipController;
 @property(strong) NSPopUpButton* prompts;        // in-game button prompts (#143)
 @property(strong) NSPopUpButton* shoulderNames;
-@property(strong) NSButton* promptColours;
+@property(strong) NSPopUpButton* faceColours;  // Face button colours: Off / Xbox / GameCube (#584)
+@property(strong) NSTextField* faceColoursLabel;
 @property(strong) NSButton* promptTextColours;
 @property(strong) NSTimer* timer;
 - (Mapping)bindingView;
@@ -1172,9 +1174,17 @@ static NSTextField* label(NSString* s) {
                  @"LB / RB / LT / RT with the Xbox look, L1 / R1 / L2 / R2 with the PlayStation shapes, the game's "
                  @"L / R / Z with GameCube prompts, the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face buttons setting.";
     self.shoulderNames = sn;
-    NSButton* pc = [NSButton checkboxWithTitle:@"Coloured face buttons" target:self action:@selector(promptsChanged:)];
+    NSTextField* pcl = label(@"Face button colours:");
+    NSPopUpButton* pc = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    for (auto f : {Mapping::FaceColours::kOff, Mapping::FaceColours::kXbox, Mapping::FaceColours::kGameCube}) {
+        [pc addItemWithTitle:ns(face_colours_label(f))];
+        pc.lastItem.tag = (NSInteger)f;
+    }
+    pc.target = self;
+    pc.action = @selector(promptsChanged:);
     pc.toolTip = kPromptColoursTip;
-    self.promptColours = pc;
+    self.faceColours = pc;
+    self.faceColoursLabel = pcl;
     NSButton* ptc = [NSButton checkboxWithTitle:@"Coloured face button text" target:self action:@selector(promptsChanged:)];
     ptc.toolTip = kPromptTextColoursTip;
     self.promptTextColours = ptc;
@@ -1203,13 +1213,13 @@ static NSTextField* label(NSString* s) {
     NSStackView* cameraOptions = [NSStackView stackViewWithViews:@[label(@"Camera speed:"),cameraSpeed,label(@"Mouse sensitivity:"),mouseSensitivity]];
     cameraOptions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     cameraOptions.spacing = 12;
-    for (NSView* v in @[bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions]) {
+    for (NSView* v in @[bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pcl, pc, ptc, cameras, cameraOptions]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:v];
     }
 
     NSDictionary* v = NSDictionaryOfVariableBindings(bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh,
-                                                     ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions);
+                                                     ppl, pp, snl, sn, pcl, pc, ptc, cameras, cameraOptions);
     auto C = [&](NSString* f, NSLayoutFormatOptions o = 0) {
         [root addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:f options:o metrics:nil views:v]];
     };
@@ -1221,7 +1231,7 @@ static NSTextField* label(NSString* s) {
     C(@"H:|-16-[st]-16-|");
     C(@"H:|-16-[reset]-(>=24)-[dzl]-8-[dz(160)]-6-[dzv(40)]-24-[inv]-16-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[rh]-(>=24)-[lrl]-8-[lr(160)]-6-[lrv(40)]-24-[rrl]-8-[rr(160)]-6-[rrv(40)]-16-|", NSLayoutFormatAlignAllCenterY);
-    C(@"H:|-16-[ppl]-8-[pp]-24-[snl]-8-[sn]-24-[pc]-16-[ptc]-(>=16)-|", NSLayoutFormatAlignAllCenterY);
+    C(@"H:|-16-[ppl]-8-[pp]-24-[snl]-8-[sn]-24-[pcl]-8-[pc]-16-[ptc]-(>=16)-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[cameras]-(>=16)-|");
     C(@"H:|-16-[cameraOptions]-(>=16)-|");
     C(@"V:|-12-[which]-6-[skip]-6-[fl]-6-[pv(>=400)]-0-[sep]-8-[st]-8-[reset]-10-[lr]-10-[pp]-10-[cameras]-8-[cameraOptions]-14-|");
@@ -1288,7 +1298,7 @@ static NSTextField* label(NSString* s) {
     self.rightRangeValue.stringValue = [NSString stringWithFormat:@"%.0f%%", _st.m.right_range * 100];
     [self.prompts selectItemWithTag:(NSInteger)_st.m.prompts];
     [self.shoulderNames selectItemWithTag:(NSInteger)_st.m.shoulder_names];
-    self.promptColours.state = _st.m.prompt_colours ? NSControlStateValueOn : NSControlStateValueOff;
+    [self.faceColours selectItemWithTag:(NSInteger)_st.m.face_colours];
     self.promptTextColours.state = _st.m.prompt_text_colours ? NSControlStateValueOn : NSControlStateValueOff;
     [self syncPromptColours];
     // kCustom: no segment chosen (as the overlay's "(custom)"); any segment then applies its preset.
@@ -1693,22 +1703,22 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
     // the in-game button prompts; they follow on the next frame (button_glyphs.cpp)
     _st.m.prompts = (Mapping::Prompts)self.prompts.selectedTag;
     _st.m.shoulder_names = (Mapping::ShoulderNames)self.shoulderNames.selectedTag;
-    _st.m.prompt_colours = self.promptColours.state == NSControlStateValueOn;
+    _st.m.face_colours = (Mapping::FaceColours)self.faceColours.selectedTag;
     _st.m.prompt_text_colours = self.promptTextColours.state == NSControlStateValueOn;
     [self commit];
     [self syncPromptColours];
 }
 
-// The colour checkboxes are dimmed where the resolved look ignores them (#584: Original, keyboard /
-// mouse; icons also GameCube), with the reason in front of the tooltip. Their saved state is kept.
+// The colour choices are dimmed where the resolved look ignores them (#584: Original, keyboard /
+// mouse; face colours also GameCube), with the reason in front of the tooltip. Their saved state is
+// kept. The PlayStation look with GameCube colours says that its shapes keep their own colours.
 - (void)syncPromptColours {
     const auto look = prompt_style(_st.m, pad_family());
     const bool icons = face_colours_apply(look), text = text_colours_apply(look);
-    if (self.promptColours.enabled != icons) {
-        self.promptColours.enabled = icons;
-        self.promptColours.toolTip = icons ? kPromptColoursTip
-                                           : [NSString stringWithFormat:@"%s. %@", face_colours_note(), kPromptColoursTip];
-    }
+    const char* note = !icons ? face_colours_note() : face_colours_shapes(_st.m, look) ? face_colours_shapes_note() : nullptr;
+    self.faceColours.enabled = icons;
+    self.faceColoursLabel.textColor = icons ? NSColor.labelColor : NSColor.disabledControlTextColor;
+    self.faceColours.toolTip = note ? [NSString stringWithFormat:@"%s. %@", note, kPromptColoursTip] : kPromptColoursTip;
     if (self.promptTextColours.enabled != text) {
         self.promptTextColours.enabled = text;
         self.promptTextColours.toolTip = text ? kPromptTextColoursTip
@@ -1902,23 +1912,35 @@ static int self_test() {
     expect(current().right_range == 1.11f && current().left_range == 1.0f, "right stick range = 111%");
     [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kGameCube];
     [c.shoulderNames selectItemWithTag:(NSInteger)Mapping::ShoulderNames::kXbox];
-    c.promptColours.state = NSControlStateValueOff;
+    [c.faceColours selectItemWithTag:(NSInteger)Mapping::FaceColours::kOff];
     c.promptTextColours.state = NSControlStateValueOff;
     [c promptsChanged:c.prompts];
     expect(current().prompts == Mapping::Prompts::kGameCube && current().shoulder_names == Mapping::ShoulderNames::kXbox &&
-               !current().prompt_colours && !current().prompt_text_colours,
+               current().face_colours == Mapping::FaceColours::kOff && !current().prompt_text_colours,
            "button prompts: GameCube, LB/RB/LT/RT, no colours");
     // #584: the colour checkboxes are dimmed where the look ignores them, their saved state kept
-    expect(!c.promptColours.enabled && c.promptTextColours.enabled, "GameCube: icon colours dimmed, text colours available");
-    c.promptColours.state = NSControlStateValueOn;
+    expect(!c.faceColours.enabled && c.promptTextColours.enabled, "GameCube: icon colours dimmed, text colours available");
+    [c.faceColours selectItemWithTag:(NSInteger)Mapping::FaceColours::kGameCube];
     [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kOriginal];
     [c promptsChanged:c.prompts];
-    expect(!c.promptColours.enabled && !c.promptTextColours.enabled && current().prompt_colours && !current().prompt_text_colours,
+    expect(!c.faceColours.enabled && !c.promptTextColours.enabled && current().face_colours == Mapping::FaceColours::kGameCube &&
+               !current().prompt_text_colours,
            "Original: both colour checkboxes dimmed, saved values kept");
-    expect([c.promptColours.toolTip hasPrefix:@"Xbox and PlayStation looks only"], "Original: the dimmed checkbox says why");
+    expect([c.faceColours.toolTip hasPrefix:@"Xbox and PlayStation looks only"], "Original: the dimmed choice says why");
     [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kXbox];
     [c promptsChanged:c.prompts];
-    expect(c.promptColours.enabled && c.promptTextColours.enabled && current().prompt_colours, "Xbox: both colour checkboxes available");
+    expect(c.faceColours.enabled && c.promptTextColours.enabled && current().face_colours == Mapping::FaceColours::kGameCube &&
+               active_prompt_style().gamecube_colours && [c.faceColours.toolTip isEqualToString:kPromptColoursTip],
+           "Xbox: both colour choices available, the GameCube colours on the Xbox letters");
+    [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kPlayStation];
+    [c promptsChanged:c.prompts];
+    expect(c.faceColours.enabled && [c.faceColours.toolTip hasPrefix:@"PlayStation shapes keep their own colours"] &&
+               !active_prompt_style().gamecube_colours && active_prompt_style().colours,
+           "PlayStation + GameCube colours: the shapes in their own colours, and the tooltip says so");
+    [c.faceColours selectItemWithTag:(NSInteger)Mapping::FaceColours::kXbox];
+    [c promptsChanged:c.faceColours];
+    expect(current().face_colours == Mapping::FaceColours::kXbox && [c.faceColours.toolTip isEqualToString:kPromptColoursTip],
+           "Face button colours: Xbox");
     [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kKeyboard];
     [c promptsChanged:c.prompts];
     expect(current().prompts == Mapping::Prompts::kKeyboard &&

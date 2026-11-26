@@ -150,7 +150,12 @@ struct Mapping {
     enum class ShoulderNames : uint8_t { kAuto, kNintendo, kNumbered, kXbox };
     Prompts prompts = Prompts::kAuto;            // in-game face-button look
     ShoulderNames shoulder_names = ShoulderNames::kAuto;
-    bool prompt_colours = true;                  // coloured face buttons (Xbox / PlayStation colours)
+    // Face button colours (#584): Off (the game's white buttons), Xbox (green A, red B, blue X, yellow Y) or
+    // GameCube (the GameCube look's palette: green A, red B, grey X and Y) on the Xbox letters and layout. The
+    // PlayStation shapes keep their own colours with Xbox and GameCube. Saved as "face_colours" (not the
+    // default only); the older "button_colours" bool reads as Xbox (true) or Off (false).
+    enum class FaceColours : uint8_t { kOff, kXbox, kGameCube };
+    FaceColours face_colours = FaceColours::kXbox;
     // Controls > Controller > "L turns the GamePad page" (off): in play the game reads L only to turn
     // its GamePad screen between Items and Map; off, an input that presses L and a Jump / moon jump
     // that acts (its mod or cheat on) only jumps in play; L on its own always reaches the game
@@ -281,6 +286,7 @@ enum class ShoulderStyle : uint8_t { kOriginal, kNumbered, kXbox, kGameCube };
 struct PromptStyle {
     FaceStyle face = FaceStyle::kOriginal;
     bool colours = false;         // face colours (only with a face style)
+    bool gamecube_colours = false;  // the Xbox look in the GameCube palette (icons and text; #584)
     bool text_colours = false;    // action words in their button's colour (only with a face style)
     ShoulderStyle shoulders = ShoulderStyle::kOriginal;
     bool positions = false;       // by label's look: the HUD cluster follows the host face buttons
@@ -291,13 +297,21 @@ struct PromptStyle {
 };
 PromptStyle prompt_style(const Mapping& m, PadFamily family);
 // Whether the two colour options change the prompts of a resolved look, so the settings can dim
-// them where they do nothing (#584; the saved choices are kept): coloured face buttons with the
+// them where they do nothing (#584; the saved choices are kept): face button colours with the
 // Xbox and PlayStation looks (the GameCube look always has its own colours), coloured face button
 // text with those and the GameCube look. The original look and keyboard / mouse ignore both.
+// The GameCube palette is for the Xbox look; the PlayStation shapes keep their own colours with it
+// (no pad has GameCube-coloured shapes), which face_colours_shapes_note() says.
 inline bool face_colours_apply(const PromptStyle& s) { return s.face == FaceStyle::kXbox || s.face == FaceStyle::kPlayStation; }
 inline bool text_colours_apply(const PromptStyle& s) { return face_colours_apply(s) || s.face == FaceStyle::kGameCube; }
 inline const char* face_colours_note() { return "Xbox and PlayStation looks only"; }
 inline const char* text_colours_note() { return "Xbox, PlayStation and GameCube looks only"; }
+inline const char* face_colours_shapes_note() { return "PlayStation shapes keep their own colours"; }
+// The PlayStation look with the GameCube choice: shown in its own colours, so the settings say so
+inline bool face_colours_shapes(const Mapping& m, const PromptStyle& s) {
+    return s.face == FaceStyle::kPlayStation && m.face_colours == Mapping::FaceColours::kGameCube;
+}
+const char* face_colours_label(Mapping::FaceColours c);  // for the UI: "Off", "Xbox", "GameCube"
 // The game's prompts: prompt_style of the bindings the controller in use plays with (active_view)
 // and the pad family. generation() bumps when the controller in use changes, so a cached style
 // follows a switch to a controller with other bindings.

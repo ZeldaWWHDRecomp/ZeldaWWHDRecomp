@@ -596,7 +596,8 @@ PromptStyle prompt_style(const Mapping& m, PadFamily family) {
     if (s.face == FaceStyle::kOriginal || s.face == FaceStyle::kGameCube) s.buttons = {0, 1, 2, 3};
     s.positions = s.face != FaceStyle::kOriginal && labels;
     if (s.face != FaceStyle::kOriginal) s.spots = s.face == FaceStyle::kGameCube ? std::array<int,4>{0,1,2,3} : hud_spots(m);
-    s.colours = s.face != FaceStyle::kOriginal && m.prompt_colours;
+    s.colours = s.face != FaceStyle::kOriginal && m.face_colours != Mapping::FaceColours::kOff;
+    s.gamecube_colours = s.face == FaceStyle::kXbox && m.face_colours == Mapping::FaceColours::kGameCube;
     s.text_colours = s.face != FaceStyle::kOriginal && m.prompt_text_colours;
     switch (m.shoulder_names) {
     case Mapping::ShoulderNames::kAuto:
@@ -611,10 +612,19 @@ PromptStyle prompt_style(const Mapping& m, PadFamily family) {
     if (m.prompts == Mapping::Prompts::kKeyboard) {
         s.face = FaceStyle::kKeyboard;
         s.buttons = s.spots = {0,1,2,3};
-        s.positions = s.colours = s.text_colours = false;
+        s.positions = s.colours = s.gamecube_colours = s.text_colours = false;
         s.shoulders = ShoulderStyle::kOriginal;
     }
     return s;
+}
+
+const char* face_colours_label(Mapping::FaceColours c) {
+    switch (c) {
+    case Mapping::FaceColours::kOff: return "Off";
+    case Mapping::FaceColours::kXbox: return "Xbox";
+    case Mapping::FaceColours::kGameCube: return "GameCube";
+    }
+    return "Xbox";
 }
 
 const char* prompts_label(Mapping::Prompts p) {
@@ -1383,7 +1393,10 @@ std::string to_json(const Mapping& m) {
         prompts += std::string(",\n    \"button_prompts\": \"") + kPromptIds[(int)m.prompts] + "\"";
     if (m.shoulder_names != Mapping::ShoulderNames::kAuto)
         prompts += std::string(",\n    \"shoulder_names\": \"") + kShoulderIds[(int)m.shoulder_names] + "\"";
-    if (!m.prompt_colours) prompts += ",\n    \"button_colours\": false";
+    // #584: "face_colours" when not Xbox; Off also keeps the older "button_colours": false, so an
+    // older build reads it as off (GameCube reads there as on, the Xbox colours)
+    if (m.face_colours == Mapping::FaceColours::kOff) prompts += ",\n    \"face_colours\": \"off\",\n    \"button_colours\": false";
+    if (m.face_colours == Mapping::FaceColours::kGameCube) prompts += ",\n    \"face_colours\": \"gamecube\"";
     if (!m.prompt_text_colours) prompts += ",\n    \"button_text_colours\": false";
     // issue #267: written only when on (files without it stay as they were)
     if (m.background_controllers) prompts += ",\n    \"background_controllers\": true";
@@ -1551,7 +1564,15 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
             else if (n->s == "xbox") m.shoulder_names = Mapping::ShoulderNames::kXbox;
             else if (n->s != "auto") warn += "unknown shoulder_names \"" + n->s + "\"; ";
         }
-        if (const Json* c = op->get("button_colours"); c && c->type == Json::Bool) m.prompt_colours = c->b;
+        // the older on/off "button_colours" (Xbox / Off), then "face_colours" over it (#584)
+        if (const Json* c = op->get("button_colours"); c && c->type == Json::Bool)
+            m.face_colours = c->b ? Mapping::FaceColours::kXbox : Mapping::FaceColours::kOff;
+        if (const Json* c = op->get("face_colours"); c && c->type == Json::Str) {
+            if (c->s == "off") m.face_colours = Mapping::FaceColours::kOff;
+            else if (c->s == "xbox") m.face_colours = Mapping::FaceColours::kXbox;
+            else if (c->s == "gamecube") m.face_colours = Mapping::FaceColours::kGameCube;
+            else warn += "unknown face_colours \"" + c->s + "\"; ";
+        }
         if (const Json* c = op->get("button_text_colours"); c && c->type == Json::Bool) m.prompt_text_colours = c->b;
     }
     m.preset = read_preset(root.get("pad_preset"));

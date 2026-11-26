@@ -80,6 +80,7 @@ int expected_plain = -1;
 int expected_action = -1;
 bool expect_xbox;      // Xbox positions (the HUD cluster moves)
 bool expect_tint;      // Xbox colours on face icons and pictures
+bool expect_gc_palette;  // ... in the GameCube palette (Face button colours: GameCube, #584)
 bool expect_gamecube_picture_texture;
 uint32_t gamecube_material = base + 0xB000;
 uint32_t stock_picture_texture = base + 0xB100;
@@ -100,6 +101,7 @@ void expect_current() {
     expected_spots = look.spots;
     expect_xbox = look.positions;
     expect_tint = look.face == input_map::FaceStyle::kXbox && look.colours;
+    expect_gc_palette = look.gamecube_colours;
     expect_names = (int)look.shoulders;
     expect_shapes = look.face == input_map::FaceStyle::kPlayStation ? (look.colours ? 1 : 0)
                   : look.face == input_map::FaceStyle::kGameCube ? 2 : -1;
@@ -835,6 +837,28 @@ void automatic_test() {
     c.r[3] = picture;
     hook_02874D54(&c);
     assert(c.r[3] == 0xC003);
+    // #584: Face button colours: GameCube keeps the Xbox letters and spots; the pictures take the
+    // GameCube palette (the stub checks each corner against tint(..., true)), and the change rebuilds
+    {
+        auto gc = mapping;
+        gc.face_colours = input_map::Mapping::FaceColours::kGameCube;
+        input_map::set_current(gc, false);
+        expect_current();
+        assert(expect_xbox && expect_tint && expect_gc_palette);
+        for (int f = 0; f < 4; ++f) {
+            constexpr const char* names[] = {"P_A_00", "P_B_00", "P_X_00", "P_Y_00"};
+            std::strcpy((char*)mem::ptr(picture + 0x80), names[f]);
+            picture_face = f;
+            for (uint32_t i = 0; i < 4; i++) st32(picture + 0xA8 + i * 4, corners[i]);
+            Cpu g{};
+            g.r[3] = picture;
+            hook_02874D54(&g);
+            for (uint32_t i = 0; i < 4; i++) assert(ld32(picture + 0xA8 + i * 4) == corners[i]);  // restored after the draw
+        }
+        input_map::set_current(mapping, false);
+        expect_current();
+        assert(!expect_gc_palette);
+    }
 
     // A Nintendo pad on Automatic resolves to by position: the prompts keep the stock colours.
     input_map::note_face_labels(nintendo);
@@ -945,7 +969,7 @@ void set_options(input_map::FaceLayout face, input_map::Mapping::Prompts prompts
     input_map::apply_face_layout(mapping, face);
     mapping.prompts = prompts;
     mapping.shoulder_names = names;
-    mapping.prompt_colours = colours;
+    mapping.face_colours = colours ? input_map::Mapping::FaceColours::kXbox : input_map::Mapping::FaceColours::kOff;
     input_map::set_current(mapping, false);
     expect_current();
 }
@@ -1421,7 +1445,7 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
         const bool start = button_glyphs::marked_start(ld8(quad + 0x2F));
         for (uint32_t j = 0; j < 2; j++) {
             uint32_t want = expected_action>=4 ? shoulder_word_ink[j] :
-                expect_tint && face >= 0 && !hud_letter ? button_glyphs::tint(authored[j], expected_buttons[face]) : authored[j];
+                expect_tint && face >= 0 && !hud_letter ? button_glyphs::tint(authored[j], expected_buttons[face], expect_gc_palette) : authored[j];
             if (expected_action >= 0) {
                 const auto look = input_map::prompt_style(input_map::current(), input_map::pad_family());
                 if (look.text_colours && (expected_action<4 || (look.face==input_map::FaceStyle::kGameCube &&
@@ -1429,7 +1453,7 @@ extern "C" void f_028F7C7C_orig(Cpu* c) {
                     const bool shoulder=expected_action>=4;
                     const int button=shoulder ? expected_action-4 : expected_buttons[expected_action];
                     const uint32_t rgb=shoulder ? (button==1?0x6754C8FF:0xE5E5E5FF)
-                        : look.face == input_map::FaceStyle::kXbox ? button_glyphs::colour(button)
+                        : look.face == input_map::FaceStyle::kXbox ? button_glyphs::colour(button, look.gamecube_colours)
                         : look.face == input_map::FaceStyle::kGameCube ? button_glyphs::gamecube_colour(button)
                         : button_glyphs::kShapeColours[button];
                     const uint32_t ink=shoulder ? shoulder_word_ink[j] : authored[j];
@@ -1502,7 +1526,7 @@ extern "C" void f_02874D54_orig(Cpu* c) {
                 continue;
             }
             uint32_t want = corners[i];
-            if (expect_tint && picture_face >= 0) want = button_glyphs::tint(corners[i], expected_buttons[picture_face]);
+            if (expect_tint && picture_face >= 0) want = button_glyphs::tint(corners[i], expected_buttons[picture_face], expect_gc_palette);
             assert(ld32(c->r[3] + 0xA8 + i * 4) == want);
         }
     }
@@ -1806,6 +1830,10 @@ int main() {
     assert(button_glyphs::tint(0xFFFFFFFF, 2) == 0x3B91E5FF);
     assert(button_glyphs::tint(0xFFFFFFFF, 3) == 0xEBC52EFF);
     assert(button_glyphs::tint(0x000000A0, 0) == 0x000000A0);
+    // #584: the GameCube palette on the Xbox letters: green A, red B, grey X and Y (the GameCube look's discs)
+    assert(button_glyphs::tint(0xFFFFFFFF, 0, true) == 0x58BE36FF && button_glyphs::tint(0xFFFFFFFF, 1, true) == 0xE34B49FF);
+    assert(button_glyphs::tint(0xFFFFFFFF, 2, true) == 0xA9ADB1FF && button_glyphs::tint(0xFFFFFFFF, 3, true) == 0xA9ADB1FF);
+    assert(button_glyphs::tint(0x000000A0, 2, true) == 0x000000A0 && button_glyphs::colour(3, false) == 0xEBC52EFF);
     assert(button_glyphs::tint(0xFEDCBA00, -1) == 0xFEDCBA00);
     for (uint32_t code : {uint32_t('A'), uint32_t('B'), 0xE081u, 0x2665u, 0xE0030u})
         assert(button_glyphs::face_character(code) == -1);
@@ -1999,10 +2027,11 @@ int main() {
     do {
         for (auto appearance : {input_map::Mapping::Prompts::kXbox, input_map::Mapping::Prompts::kPlayStation,
                                 input_map::Mapping::Prompts::kGameCube, input_map::Mapping::Prompts::kOriginal})
-            for (bool colours : {true, false}) for (bool text_colours : {true, false})
+            for (auto colours : {input_map::Mapping::FaceColours::kXbox, input_map::Mapping::FaceColours::kOff,
+                                 input_map::Mapping::FaceColours::kGameCube}) for (bool text_colours : {true, false})
             for (int face = 0; face < 4; ++face) {
                 auto mapping = input_map::Mapping::defaults(); mapping.prompts = appearance;
-                mapping.prompt_colours = colours;
+                mapping.face_colours = colours;
                 mapping.prompt_text_colours = text_colours;
                 for (int i = 0; i < 4; ++i) mapping.pad[input_map::kA+i] = input_map::kPadA + permutation[i];
                 input_map::set_current(mapping, false); expect_current();
@@ -2031,7 +2060,9 @@ int main() {
                         // Off, or with Original prompts, the words keep the game's own colours.
                         const bool restyled = appearance != input_map::Mapping::Prompts::kOriginal;
                         const uint32_t want = !text_colours || !restyled ? authored[0]
-                            : appearance == input_map::Mapping::Prompts::kXbox ? xbox[permutation[face]]
+                            // #584: the Xbox letters in the GameCube palette with Face button colours: GameCube
+                            : appearance == input_map::Mapping::Prompts::kXbox
+                                ? (colours == input_map::Mapping::FaceColours::kGameCube ? gc : xbox)[permutation[face]]
                             : appearance == input_map::Mapping::Prompts::kGameCube ? gc[face] : ps[permutation[face]];
                         assert(drawn_ink == want);
                         // A text-only setting change rebuilds cached vertices immediately, except with

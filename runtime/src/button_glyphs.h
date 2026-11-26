@@ -46,19 +46,23 @@ inline std::array<ClusterPoint,4> gamecube_cluster(ClusterPoint a, ClusterPoint 
             {a.x+(x.x-a.x)*.25f, a.y+(x.y-a.y)*1.15f}};
 }
 
-constexpr uint32_t colour(int face) {
-    constexpr uint32_t colours[] = {0x58BE36FF, 0xE34B49FF, 0x3B91E5FF, 0xEBC52EFF};
-    return face >= 0 && face < 4 ? colours[face] : 0xFFFFFFFF;
-}
+// The GameCube look's face colours (gamecube_icon's discs): green A, red B, grey X and Y
 constexpr uint32_t gamecube_colour(int face) {
     constexpr uint32_t colours[] = {0x58BE36FF, 0xE34B49FF, 0xA9ADB1FF, 0xA9ADB1FF};
+    return face >= 0 && face < 4 ? colours[face] : 0xFFFFFFFF;
+}
+// The Xbox look's colours of host button A/B/X/Y: Xbox (green, red, blue, yellow), or with
+// Face button colours: GameCube (#584) the GameCube look's palette on the same letters
+constexpr uint32_t colour(int face, bool gamecube = false) {
+    constexpr uint32_t colours[] = {0x58BE36FF, 0xE34B49FF, 0x3B91E5FF, 0xEBC52EFF};
+    if (gamecube) return gamecube_colour(face);
     return face >= 0 && face < 4 ? colours[face] : 0xFFFFFFFF;
 }
 
 // Packed RGBA, as the game keeps vertex colours. Multiply RGB to retain authored shading and
 // animation; keep alpha exactly, including fully transparent glyphs and HUD fade-in/out.
-constexpr uint32_t tint(uint32_t rgba, int face) {
-    const uint32_t rgb = colour(face);
+constexpr uint32_t tint(uint32_t rgba, int face, bool gamecube = false) {
+    const uint32_t rgb = colour(face, gamecube);
     uint32_t out = rgba & 0xFF;
     for (int shift = 24; shift > 0; shift -= 8) out |= (((rgba >> shift) & 0xFF) * ((rgb >> shift) & 0xFF) / 255) << shift;
     return out;
