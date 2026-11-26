@@ -963,7 +963,9 @@ struct ExactCullView {
 // gameplay FOV scale, the stereo margin). It took the camera's authored fovy as it was: with a gameplay FOV scale above
 // 100 % the in-between passes of 120 / 240 fps culled with the narrower original view while drawing the wider one, so
 // tall grass, bushes and flowers near the picture's edges (mDoLib_clipper::clip per patch) were drawn on some passes
-// and dropped on others (#656; 60 fps has no blended pass without logic). debug: WWHD_INTERP_CLIPPER_FOV=0 as before
+// and dropped on others (#656; 60 fps has no blended pass without logic). Paced 120 / 240 fps blends at t = k/(n+1)
+// with n the in-between frames that fit; lerp_f's (1-t)a + tb then misses even a constant fovy by its last bit, so the
+// blended frustum is in use on most steps, not only during zooms. debug: WWHD_INTERP_CLIPPER_FOV=0 as before
 constexpr uint32_t kClipperBytes = 0x64;
 uint8_t g_clipper_exact[kClipperBytes], g_clipper_blended[kClipperBytes];
 uint64_t g_clipper_pass = ~0ull;  // the pass that has a blended frustum
