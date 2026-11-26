@@ -3,6 +3,7 @@
 // WWHD's first-person camera reads it (frame-to-frame matrix change), sensitivity and invert, the mouse as a
 // gyro, device switching and stuck sensor timestamps, the Cemuhook (DSU) packets and a client/server
 // exchange over loopback UDP, and the settings.
+#include "motion/deck_gyro.h"
 #include "motion/dsu.h"
 #include "motion/fusion.h"
 #include "motion/motion.h"
@@ -15,6 +16,8 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <string>
 #include <thread>
 
 #ifdef _WIN32
@@ -694,6 +697,87 @@ static void test_remote_source() {
     set_settings(Settings{});
 }
 
+// Steam Deck under Steam Input (deck_gyro.h, issue #566): the switch, the ignore-list rewriting (the other
+// ignored devices stay), and which pad is sensor-only (never a second set of buttons)
+static void test_deck_gyro() {
+    using namespace deck_gyro;
+    // the switch: only on a Steam Deck; WWHD_DECK_GYRO=0 (or off / false) turns it off
+    assert(enabled(true, nullptr) && enabled(true, "1") && enabled(true, ""));
+    assert(!enabled(true, "0") && !enabled(true, "off") && !enabled(true, "false"));
+    assert(!enabled(false, nullptr) && !enabled(false, "1"));
+    // the list Steam sets: the Deck's controller leaves it, every other entry stays (in order)
+    const std::string steam = "0x28de/0x1102,0x28de/0x1142,0x28de/0x1205,0x054c/0x0ce6,0x057e/0x2009";
+    bool changed = false;
+    const std::string rest = without_device(steam, kValve, kDeckController, &changed);
+    assert(changed && rest == "0x28de/0x1102,0x28de/0x1142,0x054c/0x0ce6,0x057e/0x2009");
+    assert(!lists_device(rest, kValve, kDeckController) && lists_device(rest, 0x054c, 0x0ce6) && lists_device(rest, 0x28de, 0x1142));
+    // SDL's own reading of a list: upper case, spaces, other separators, the Deck twice, the Deck alone
+    assert(without_device("0x28DE/0x1205, 0x045e/0x028e;0x28de/0x1205 0x057e/0x2009", kValve, kDeckController) == "0x045e/0x028e,0x057e/0x2009");
+    assert(without_device("0x28de/0x1205", kValve, kDeckController, &changed) == "" && changed);
+    // not listed: the list stays as it is, byte for byte
+    assert(without_device("0x054c/0x0ce6 , 0x057e/0x2009", kValve, kDeckController, &changed) == "0x054c/0x0ce6 , 0x057e/0x2009" && !changed);
+    assert(without_device("", kValve, kDeckController, &changed).empty() && !changed);
+    assert(with_device("0x054c/0x0ce6", kValve, kDeckController) == "0x054c/0x0ce6,0x28de/0x1205");
+    assert(with_device("0x28de/0x1205", kValve, kDeckController) == "0x28de/0x1205");
+    // what is set before SDL_Init
+    std::map<std::string, std::string> env;
+    auto get = [&](const char* name) -> const char* { auto it = env.find(name); return it == env.end() ? nullptr : it->second.c_str(); };
+    auto as_map = [](const Prepared& p) { std::map<std::string, std::string> m(p.set.begin(), p.set.end()); assert(m.size() == p.set.size()); return m; };
+    // off (WWHD_DECK_GYRO=0, or not a Deck): nothing at all
+    env["SDL_GAMECONTROLLER_IGNORE_DEVICES"] = steam;
+    assert(prepare(false, get).set.empty());
+    // Steam's list: rewritten without the Deck; the HIDAPI Steam Deck driver on
+    auto p = prepare(true, get);
+    auto m = as_map(p);
+    assert(p.was_ignored && m.size() == 2 && m["SDL_GAMECONTROLLER_IGNORE_DEVICES"] == rest && m["SDL_JOYSTICK_HIDAPI_STEAMDECK"] == "1");
+    // a list in a file (@path): written back as the list itself
+    env["SDL_GAMECONTROLLER_IGNORE_DEVICES"] = "@/steam/ignore.txt";
+    std::string asked;
+    p = prepare(true, get, [&](const std::string& path) { asked = path; return steam; });
+    m = as_map(p);
+    assert(asked == "/steam/ignore.txt" && m["SDL_GAMECONTROLLER_IGNORE_DEVICES"] == rest);
+    // no Deck on the lists (desktop without Steam): only the driver hint, the lists untouched
+    env.clear();
+    env["SDL_GAMECONTROLLER_IGNORE_DEVICES"] = "0x054c/0x0ce6";
+    p = prepare(true, get);
+    m = as_map(p);
+    assert(!p.was_ignored && m.size() == 1 && m["SDL_JOYSTICK_HIDAPI_STEAMDECK"] == "1");
+    // HIDAPI's own ignore list and an allow-only list
+    env.clear();
+    env["SDL_HIDAPI_IGNORE_DEVICES"] = "0x28de/0x1205,0x054c/0x0ce6";
+    env["SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT"] = "0x28de/0x11ff";
+    p = prepare(true, get);
+    m = as_map(p);
+    assert(p.was_ignored && m["SDL_HIDAPI_IGNORE_DEVICES"] == "0x054c/0x0ce6" &&
+           m["SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT"] == "0x28de/0x11ff,0x28de/0x1205");
+    env["SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT"] = "";  // empty: no allow-only list, nothing to add
+    assert(!as_map(prepare(true, get)).count("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT"));
+    // roles: the Deck's controller is sensor-only next to Steam's virtual pad, else the controller
+    const Pad deck{7, kValve, kDeckController}, steam_pad{3, kValve, kSteamVirtualPad}, dualsense{9, 0x054c, 0x0ce6};
+    const Pad steam_handle_pad{4, 0x045e, 0x028e, 0x1234};  // a pad SDL gives a Steam Input handle for
+    assert(role(true, deck, {deck, steam_pad}) == Role::kSensorOnly);
+    assert(role(true, deck, {steam_pad, deck}) == Role::kSensorOnly);  // whatever the order
+    assert(role(true, deck, {deck, steam_handle_pad}) == Role::kSensorOnly);
+    assert(role(true, deck, {deck}) == Role::kController);                // no Steam Input: the normal controller
+    assert(role(true, deck, {deck, dualsense}) == Role::kController);
+    assert(role(false, deck, {deck, steam_pad}) == Role::kController);    // WWHD_DECK_GYRO=0: as before
+    // never another pad: Steam's virtual pad and any other controller keep their buttons
+    for (const Pad& other : {steam_pad, dualsense, steam_handle_pad})
+        assert(role(true, other, {deck, steam_pad, dualsense, other}) == Role::kController);
+    // buttons never doubled: next to a virtual pad exactly one device per set of physical buttons is a controller
+    {
+        const std::vector<Pad> present{deck, steam_pad};
+        int controllers = 0, sensor_only = 0;
+        for (const Pad& pad : present) (role(true, pad, present) == Role::kController ? controllers : sensor_only)++;
+        assert(controllers == 1 && sensor_only == 1);
+    }
+    // the gyro: the sensor-only Deck's feeds while the pad in use has none (Steam's virtual pad), not
+    // while a controller with its own gyro is in use
+    assert(sensor_only_feeds(false, false) && sensor_only_feeds(true, false) && !sensor_only_feeds(true, true));
+    assert(is_deck_controller(0x28de, 0x1205) && !is_deck_controller(0x28de, 0x11ff));
+    assert(is_steam_virtual_pad(0x28de, 0x11ff) && is_steam_virtual_pad(0x045e, 0x028e, 5) && !is_steam_virtual_pad(0x045e, 0x028e));
+}
+
 int main() {
     test_aim_conventions();
     test_game_reading();
@@ -703,6 +787,7 @@ int main() {
     test_settings_and_sources();
     test_device_source();
     test_remote_source();
+    test_deck_gyro();
     puts("motion_test: aim conventions (player space, yaw, roll; SDL and Cemuhook), game reading, bias, sensitivity/invert, "
-         "mouse, device switching, phone sensor rotation/reset, the iPhone GamePad, timestamps, DSU packets and loopback, settings passed");
+         "mouse, device switching, phone sensor rotation/reset, the iPhone GamePad, timestamps, DSU packets and loopback, settings, Steam Deck gyro under Steam Input passed");
 }

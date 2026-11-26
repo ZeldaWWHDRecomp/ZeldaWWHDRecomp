@@ -1271,7 +1271,7 @@ if(WWHD_HAS_VULKAN)
 endif()
 # gyro: orientation integration, axis mapping, Cemuhook (DSU) packets, mouse as a gyro, settings
 # (runtime/src/motion/)
-set(MOTION_SOURCES runtime/src/motion/motion.cpp runtime/src/motion/fusion.cpp runtime/src/motion/dsu.cpp)
+set(MOTION_SOURCES runtime/src/motion/motion.cpp runtime/src/motion/fusion.cpp runtime/src/motion/dsu.cpp runtime/src/motion/deck_gyro.cpp)
 add_executable(motion_test runtime/tools/motion_test.cpp ${MOTION_SOURCES})
 target_include_directories(motion_test PRIVATE runtime/src)
 target_compile_options(motion_test PRIVATE -UNDEBUG)
@@ -2970,6 +2970,7 @@ if(WWHD_SDL_HOST)
   add_test(NAME overlay_focus_matrix COMMAND input_sdl_test --menu-matrix)
   add_test(NAME sdl_background_controllers COMMAND input_sdl_test --background)
   add_test(NAME sdl_controller_focus COMMAND input_sdl_test --focus)  # issue #406: TV or GamePad window focused
+  add_test(NAME sdl_deck_gyro COMMAND input_sdl_test --deck-gyro)  # issue #566: Steam Deck gyro under Steam Input
 endif()
 
 # Link only the overlay input API and SDL boundary. Dead code elimination drops renderer/game

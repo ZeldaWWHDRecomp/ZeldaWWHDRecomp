@@ -9,6 +9,8 @@
 #include <map>
 #include <string>
 #include <tuple>
+#include <vector>
+#include "motion/motion.h"
 #include "input.h"
 #include "gfx/renderer.h"
 #include "input_map.h"
@@ -47,7 +49,10 @@ namespace mods {
  void quick_use_reset(){++quickUseResets;quickUsePending=false;}
  void quick_use_filter_pad(input::PadState& s){++quickUseFilters;quickUseSample=s;if(quickUsePending){s.buttons|=input::kX;quickUsePending=false;}}
  void fast_forward_reset(){} }  // mods: release required on focus loss
-void log_msg(const char*,...){}
+// the log lines, for the tests that check what the host says (--deck-gyro)
+static std::vector<std::string> logLines;static bool keepLog=false;
+void log_msg(const char* fmt,...){if(!keepLog)return;char b[1024];va_list a;va_start(a,fmt);vsnprintf(b,sizeof b,fmt,a);va_end(a);logLines.push_back(b);}
+static int logCount(const char* part){int n=0;for(auto& l:logLines)if(l.find(part)!=std::string::npos)n++;return n;}
 // settings overlay: closed (keys reach the game and its shortcuts as before); the game's text prompt
 // (overlay/text_entry.h) shows while promptShown: overlay::key takes every key then, as the real one does
 static bool promptShown=false;static int promptKeys=0;static std::string promptText;
@@ -419,6 +424,116 @@ static int gamecube_auto_prompts() {
  return 0;
 }
 
+// Issue #566: the Steam Deck under Steam Input. Steam hides the Deck's built-in controller (28DE:1205) from
+// games and gives them its virtual pad (28DE:11FF), which has no gyro. The host takes the Deck off Steam's
+// ignore list (the other entries stay) and opens it next to the virtual pad for its gyro only: its buttons
+// never reach the game (no double presses), it never rumbles, it is not listed as a controller; without the
+// virtual pad it is the normal controller; WWHD_DECK_GYRO=0 is the behaviour before. SDL virtual joysticks
+// with the Deck's and Steam's IDs stand in for the two devices (the real Deck path is Linux).
+static int deck_gyro(){
+ const auto userDir=std::filesystem::temp_directory_path()/"wwhd-input-sdl-test-566";
+ std::filesystem::create_directories(userDir);set_env("WWHD_USER_DIR",userDir.string().c_str());
+ keepLog=true;
+ // before SDL_Init: Steam's ignore list loses the Deck only; SDL's HIDAPI Steam Deck driver on
+ const char* steamList="0x28de/0x1205,0x28de/0x1142,0x054c/0x0ce6";
+ auto sdlValue=[](const char* name){const char* h=SDL_GetHint(name);return std::string(h?h:"(unset)");};
+ set_env("WWHD_DECK_GYRO",nullptr);
+ set_env("SDL_GAMECONTROLLER_IGNORE_DEVICES",steamList);SDL_setenv_unsafe("SDL_GAMECONTROLLER_IGNORE_DEVICES",steamList,1);  // as Steam starts the game
+ input::prepare_deck_gyro(false);  // not a Deck: nothing changes
+ assert(sdlValue("SDL_GAMECONTROLLER_IGNORE_DEVICES")==steamList&&sdlValue(SDL_HINT_JOYSTICK_HIDAPI_STEAMDECK)=="(unset)");
+ set_env("WWHD_DECK_GYRO","0");input::prepare_deck_gyro(true);  // WWHD_DECK_GYRO=0: nothing changes
+ assert(sdlValue("SDL_GAMECONTROLLER_IGNORE_DEVICES")==steamList&&sdlValue(SDL_HINT_JOYSTICK_HIDAPI_STEAMDECK)=="(unset)");
+ set_env("WWHD_DECK_GYRO",nullptr);input::prepare_deck_gyro(true);
+ assert(sdlValue("SDL_GAMECONTROLLER_IGNORE_DEVICES")=="0x28de/0x1142,0x054c/0x0ce6");
+ assert(std::string(SDL_getenv_unsafe("SDL_GAMECONTROLLER_IGNORE_DEVICES"))=="0x28de/0x1142,0x054c/0x0ce6");  // SDL reads it there too
+ assert(sdlValue(SDL_HINT_JOYSTICK_HIDAPI_STEAMDECK)=="1");
+ assert(logCount("taken off Steam's controller ignore list")==1);
+ SDL_SetHintWithPriority(SDL_HINT_JOYSTICK_HIDAPI_STEAMDECK,"0",SDL_HINT_OVERRIDE);  // no real Deck in this test
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");assert(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS));
+ input::init();
+ auto m=input_map::Mapping::defaults();m.background_controllers=true;input_map::set_current(m,false);  // a hidden window has no focus
+ auto* tv=SDL_CreateWindow("TV",32,32,SDL_WINDOW_HIDDEN);assert(tv);input::set_prompt_window(tv);
+ motion::Settings gyro;gyro.source=motion::kController;motion::set_settings(gyro);
+ // the two devices
+ static std::atomic<int> deckSensors{-1};static std::atomic<Uint16> deckMotor{0},steamMotor{0};
+ SDL_VirtualJoystickSensorDesc sensors[2]={{SDL_SENSOR_GYRO,250.f},{SDL_SENSOR_ACCEL,250.f}};
+ auto attachDeck=[&]{
+  SDL_VirtualJoystickDesc d;SDL_INIT_INTERFACE(&d);
+  d.type=SDL_JOYSTICK_TYPE_GAMEPAD;d.naxes=SDL_GAMEPAD_AXIS_COUNT;d.nbuttons=SDL_GAMEPAD_BUTTON_COUNT;d.name="Steam Deck";
+  d.vendor_id=0x28DE;d.product_id=0x1205;d.nsensors=2;d.sensors=sensors;
+  d.SetSensorsEnabled=[](void*,bool on){deckSensors=on;return true;};
+  d.Rumble=[](void*,Uint16 low,Uint16){deckMotor=low;return true;};
+  const SDL_JoystickID id=SDL_AttachVirtualJoystick(&d);assert(id);return id;};
+ auto attachSteam=[&]{
+  SDL_VirtualJoystickDesc d;SDL_INIT_INTERFACE(&d);
+  d.type=SDL_JOYSTICK_TYPE_GAMEPAD;d.naxes=SDL_GAMEPAD_AXIS_COUNT;d.nbuttons=SDL_GAMEPAD_BUTTON_COUNT;d.name="Steam Virtual Gamepad";
+  d.vendor_id=0x28DE;d.product_id=0x11FF;
+  d.Rumble=[](void*,Uint16 low,Uint16){steamMotor=low;return true;};
+  const SDL_JoystickID id=SDL_AttachVirtualJoystick(&d);assert(id);return id;};
+ auto poll=[&]{SDL_UpdateJoysticks();for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);input::update();return input::read();};
+ auto listed=[&](SDL_JoystickID id){for(auto& c:input::controllers())if(c.id==id)return true;return false;};
+ auto pressedA=[&]{float v[input_map::kPadCount];input::controller_values(v);return v[input_map::kPadA]>0.5f;};
+ // the Deck first (as at boot), then Steam's virtual pad: the Deck turns sensor-only
+ const SDL_JoystickID deckId=attachDeck();poll();
+ auto* deck=SDL_OpenJoystick(deckId);assert(deck);
+ assert(listed(deckId)&&deckSensors==1);  // alone it is the normal controller, its sensors on
+ SDL_JoystickID steamId=attachSteam();poll();poll();
+ auto* steam=SDL_OpenJoystick(steamId);assert(steam);
+ assert(listed(steamId)&&!listed(deckId)&&input::controllers().size()==1);
+ assert(logCount("becomes a sensor-only device")==1&&logCount("built-in controller opened for its gyro only")==1);
+ assert(deckSensors==1);  // opened again as a sensor-only device: its sensors on
+ // buttons: the Deck's never reach the game (Steam's virtual pad already has them)
+ auto press=[&](SDL_Joystick* j,SDL_GamepadButton b,bool down){assert(SDL_SetJoystickVirtualButton(j,b,down));return poll();};
+ auto p=press(deck,SDL_GAMEPAD_BUTTON_SOUTH,true);assert(!pressedA()&&p.buttons==0);
+ assert(SDL_SetJoystickVirtualAxis(deck,SDL_GAMEPAD_AXIS_LEFTX,32767)&&SDL_SetJoystickVirtualAxis(deck,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,32767));
+ p=poll();assert(p.lx==0&&p.buttons==0);
+ assert(SDL_SetJoystickVirtualAxis(deck,SDL_GAMEPAD_AXIS_LEFTX,0)&&SDL_SetJoystickVirtualAxis(deck,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER,0));
+ press(deck,SDL_GAMEPAD_BUTTON_SOUTH,false);
+ p=press(steam,SDL_GAMEPAD_BUTTON_SOUTH,true);assert(pressedA()&&p.buttons!=0);
+ // the same physical press arrives on both (Steam passes it on): one press, not two
+ p=press(deck,SDL_GAMEPAD_BUTTON_SOUTH,true);assert(pressedA()&&p.buttons!=0);
+ press(steam,SDL_GAMEPAD_BUTTON_SOUTH,false);p=press(deck,SDL_GAMEPAD_BUTTON_SOUTH,false);assert(!pressedA()&&p.buttons==0);
+ // rumble: Steam's virtual pad only
+ const uint8_t on[15]={0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+ rumble::set_enabled(true);rumble::gamepad_pattern(0,on,120);poll();
+ assert(steamMotor==0xFFFF&&deckMotor==0);
+ rumble::gamepad_stop(0);poll();assert(steamMotor==0);
+ // the gyro: the Deck's samples drive Controller gyro (Steam's virtual pad has none); one line says so
+ const float rest[3]={0,0,0},turn[3]={0,1.f,0},g[3]={0,9.81f,0};
+ Uint64 t=1000000;
+ for(int i=0;i<200;i++){
+  SDL_SendJoystickVirtualSensorData(deck,SDL_SENSOR_ACCEL,t,g,3);
+  SDL_SendJoystickVirtualSensorData(deck,SDL_SENSOR_GYRO,t,i<150?rest:turn,3);t+=4000000;
+  poll();
+ }
+ printf("#566 gyro status: %s\n",motion::status().c_str());
+ assert(motion::status().rfind("Receiving motion",0)==0);
+ assert(logCount("Controller gyro reads the built-in controller")==1);
+ assert(motion::gyro_controllers()==1);
+ // Steam Input goes away (Steam closed): the Deck is the normal controller again, its buttons count
+ SDL_CloseJoystick(steam);SDL_DetachVirtualJoystick(steamId);poll();poll();
+ assert(listed(deckId)&&input::controllers().size()==1&&logCount("becomes the normal controller")==1);
+ p=press(deck,SDL_GAMEPAD_BUTTON_SOUTH,true);assert(pressedA()&&p.buttons!=0);press(deck,SDL_GAMEPAD_BUTTON_SOUTH,false);
+ // and back
+ steamId=attachSteam();poll();poll();steam=SDL_OpenJoystick(steamId);assert(steam);
+ assert(listed(steamId)&&!listed(deckId)&&logCount("becomes a sensor-only device")==2);
+ p=press(deck,SDL_GAMEPAD_BUTTON_SOUTH,true);assert(!pressedA()&&p.buttons==0);press(deck,SDL_GAMEPAD_BUTTON_SOUTH,false);
+ // no fallback line: the Deck showed up
+ assert(logCount("did not show up")==0);
+ // WWHD_DECK_GYRO=0 (the behaviour before #566): a Deck that SDL sees is a controller like any other
+ set_env("WWHD_DECK_GYRO","0");input::prepare_deck_gyro(true);
+ SDL_CloseJoystick(deck);SDL_DetachVirtualJoystick(deckId);poll();
+ const SDL_JoystickID deck2=attachDeck();poll();poll();deck=SDL_OpenJoystick(deck2);assert(deck);
+ assert(listed(deck2)&&listed(steamId)&&input::controllers().size()==2);
+ p=press(deck,SDL_GAMEPAD_BUTTON_SOUTH,true);assert(pressedA());press(deck,SDL_GAMEPAD_BUTTON_SOUTH,false);
+ set_env("WWHD_DECK_GYRO",nullptr);
+ SDL_CloseJoystick(deck);SDL_DetachVirtualJoystick(deck2);SDL_CloseJoystick(steam);SDL_DetachVirtualJoystick(steamId);poll();
+ motion::set_settings(motion::Settings{});input::set_prompt_window(nullptr);SDL_DestroyWindow(tv);
+ SDL_Quit();keepLog=false;
+ puts("input_sdl_test --deck-gyro: Steam's ignore list without the Deck (others kept), the Deck sensor-only next to Steam Input's virtual pad "
+      "(no buttons, sticks, triggers or rumble from it, not listed), its gyro drives Controller gyro, normal controller without Steam Input, WWHD_DECK_GYRO=0 as before: passed");
+ return 0;
+}
 int main(int argc,char** argv){
  // Physical controllers stay out (a plugged-in WUP-028 reaches SDL through libusb): only the virtual pads count.
  for(const char* backend:{SDL_HINT_JOYSTICK_HIDAPI,SDL_HINT_JOYSTICK_RAWINPUT,SDL_HINT_XINPUT_ENABLED,SDL_HINT_JOYSTICK_WGI,
@@ -428,6 +543,7 @@ int main(int argc,char** argv){
  if(argc>1&&std::string(argv[1])=="--menu-matrix")return menu_matrix();
  if(argc>1&&std::string(argv[1])=="--background")return background_controllers();
  if(argc>1&&std::string(argv[1])=="--focus")return focus_rule();
+ if(argc>1&&std::string(argv[1])=="--deck-gyro")return deck_gyro();
  SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");
  assert(SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO));
  SDL_Event device{};device.type=SDL_EVENT_AUDIO_DEVICE_REMOVED;device.adevice.recording=false;

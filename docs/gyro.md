@@ -8,7 +8,7 @@ The port has no GamePad, so it turns a **virtual GamePad** with one of these sou
 |---|---|
 | Off (default) | the GamePad lies still: no gyro aiming, as before |
 | Device gyro (phone/tablet) | the Android device’s own gyroscope and accelerometer; rotates with the displayed screen, works with touch or a controller |
-| Controller gyro | the gyro and accelerometer of a DualSense, DualShock 4, Switch Pro, Joy-Con, Steam Deck / Steam Controller and other controllers SDL3 reads (the macOS app uses GameController.framework: DualSense, DualShock 4, Switch Pro, Joy-Con) |
+| Controller gyro | the gyro and accelerometer of a DualSense, DualShock 4, Switch Pro, Joy-Con, Steam Deck (also under Steam Input, below) / Steam Controller and other controllers SDL3 reads (the macOS app uses GameController.framework: DualSense, DualShock 4, Switch Pro, Joy-Con) |
 | Cemuhook (DSU) | a Cemuhook motion server over UDP: DS4Windows, BetterJoy, SteamDeckGyroDSU, phone apps. Default 127.0.0.1, port 26760, slot 1 |
 | Mouse aiming | mouse movement turns the GamePad while the game aims, also with the game's Options → Gyro off; for Steam Input's "gyro to mouse" output and a mouse without the mouse camera. With **Mouse camera** on (Controls → Camera) this source waits: the mouse camera aims in first person directly (issue #558, docs/controller-input.md) |
 
@@ -54,6 +54,31 @@ while the mouse aims, without changing the saved option. The game ignores the mo
 Why off by default: the gyro moves the first-person camera with every hand movement, which surprises
 players who never asked for it, and a controller lying on a desk works fine either way. The Gyro
 window says when a connected controller has a gyro.
+
+## Steam Deck under Steam Input (issue #566)
+
+**Controller gyro** reads the Deck's built-in gyro, also in Game Mode with Steam Input (issue #566). Steam
+hides the Deck's built-in controller (Valve 28DE:1205) from the games it starts (SDL's
+`SDL_GAMECONTROLLER_IGNORE_DEVICES` list) and gives them its virtual pad, which has no gyro. On a Deck the
+port therefore:
+
+- takes 28DE:1205 off that list for its own process before SDL starts (every other device on it stays
+  ignored) and turns on SDL's HIDAPI Steam Deck driver, which reads the gyro and accelerometer;
+- opens the built-in controller as a **sensor-only** device while Steam's virtual pad is connected: the
+  buttons, sticks and triggers keep coming from the virtual pad only (with your Steam Input layout), the
+  built-in controller never rumbles, is not listed under Controller details and never decides the prompts;
+- feeds its gyro to Controller gyro while the controller in use has no gyro of its own (Steam's virtual pad);
+  a controller with its own gyro in use keeps its gyro;
+- without Steam's virtual pad (Steam not running, Steam Input off for the game) uses the built-in controller
+  as the normal controller, as before.
+
+The log says what happened: `[gyro] Steam Deck: built-in controller opened for its gyro only`, then
+`[gyro] Steam Deck: Controller gyro reads the built-in controller` with the first samples; if it cannot be
+opened or does not show up within 5 seconds, one line says so and everything stays as before (Steam Input's
+gyro to mouse with the Mouse source, or SteamDeckGyroDSU with the Cemuhook source, still work).
+`WWHD_DECK_GYRO=0` turns all of this off (the behaviour before #566). Steam Input's own gyro settings (gyro
+to mouse or joystick) keep working alongside; turn them off for the game if both would aim at once.
+The same idea comes from the Metroid Prime 2 port (rivyr).
 
 ## How the game reads the GamePad
 
@@ -197,7 +222,7 @@ controllers. Please report (with the log) if something is off:
    above. With the controller on a desk the view must stay still after a second (bias calibration).
 2. Same on the **macOS app** (GameController.framework, a different axis mapping:
    `WWHD_GYRO_LOG=1` logs the raw values).
-3. **Steam Deck** (SDL) and **Joy-Con** pairs.
+3. **Steam Deck** (SDL; in Game Mode under Steam Input too, see Steam Deck under Steam Input above) and **Joy-Con** pairs.
 4. **Cemuhook**: DS4Windows or BetterJoy with the server on, source Cemuhook; the Gyro window shows
    "receiving motion". Stop the server: the game must keep running smoothly. Android needs network
    permission for this, which the app does not ask for yet.

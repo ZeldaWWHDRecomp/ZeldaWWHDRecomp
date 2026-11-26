@@ -4,7 +4,8 @@
 //   off         the GamePad lies still: no gyro aiming (the port's behaviour before gyro support)
 //   controller  the motion sensors of a host controller: DualSense, DualShock 4, Switch Pro, Joy-Con,
 //               Steam Deck / Steam Controller and others (SDL3 sensors; GameController.framework on the
-//               macOS AppKit host)
+//               macOS AppKit host). On a Steam Deck under Steam Input the built-in controller is opened
+//               next to Steam's virtual pad for its sensors only (deck_gyro.h, issue #566)
 //   cemuhook    a Cemuhook (DSU) server over UDP, default 127.0.0.1:26760 (dsu.h): DS4Windows,
 //               BetterJoy, SteamDeckGyroDSU, phone apps
 //   device      this phone/tablet’s own gyro and accelerometer (SDL3 host, screen rotation applied)
