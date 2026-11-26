@@ -564,7 +564,10 @@ void swap() {
     if (log_this_frame()) LOG("[frame] end %llu", (unsigned long long)R.frame);
     R.frame++;
     latch_res_scale();
-    if (const uint64_t scripted = fixed_seed::script_frame(R.frame);  // (TV frame unless WWHD_TEST_FIXED_SEED)
+    static const bool passDumps = capture_schedule::pass_select(getenv("WWHD_DUMP_PASS")) != -2;
+    if (passDumps) {  // test aid WWHD_DUMP_PASS: the pass the swap named (gx2_core.cpp)
+        if (capture_schedule::g_pass_dump) dump_tv(capture_schedule::stem(capture_schedule::g_pass_dump - 1, false));
+    } else if (const uint64_t scripted = fixed_seed::script_frame(R.frame);  // (TV frame unless WWHD_TEST_FIXED_SEED)
         capture_schedule::contains(g_dump_frames, scripted))
         dump_tv(capture_schedule::stem(scripted, false));
     const uint64_t loaded = g_dump_load_frames.empty() ? 0 : ss::last_load_frame();

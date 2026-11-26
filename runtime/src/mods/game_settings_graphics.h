@@ -39,6 +39,33 @@ inline Rate rate_of(int choice) {
     if (choice == kGenerated) return {0, 0, true};
     return {1, kRates[choice], false};
 }
+// True logic (decomp build only, WWHD_DECOMP: t60/t60.h): the game logic itself runs N steps per 30 Hz frame (N 2: 60,
+// N 4: 120 steps a second), drawn at 30 N fps. The two choices come after the generated one (kTrue60, kTrue120), so
+// the choices above keep their numbers; the normal build never lists them. Saved as the steps (t60Steps), not as an index.
+inline constexpr const char* kTrueRateNames[] = {"60 fps (true logic)", "120 fps (true logic, experimental)"};
+inline constexpr int kTrue60 = kRateCount, kTrue120 = kRateCount + 1, kRateCountTrue = kRateCount + 2;
+// the steps per 30 Hz frame of a choice (1: not a true-logic choice), and the choice of N steps (-1: none)
+inline int steps_of(int choice) { return choice == kTrue60 ? 2 : choice == kTrue120 ? 4 : 1; }
+inline int true_choice(int steps) { return steps == 2 ? kTrue60 : steps == 4 ? kTrue120 : -1; }
+// the choice shown: a true-logic one while N > 1 is chosen, else rate_choice's
+inline int rate_choice_true(int mode, int fps, bool generated, int steps) {
+    return steps > 1 && true_choice(steps) >= 0 ? true_choice(steps) : rate_choice(mode, fps, generated);
+}
+// the choices a menu lists, in order, into out (room for kRateCountTrue); returns how many. generated: the generated
+// choice is offered (Vulkan); true_logic: the decomp build's two true-logic choices at the end
+inline int rate_list(int* out, bool generated, bool true_logic) {
+    int n = 0;
+    for (int c = 0; c < kGenerated; c++) out[n++] = c;
+    if (generated) out[n++] = kGenerated;
+    if (true_logic) out[n++] = kTrue60, out[n++] = kTrue120;
+    return n;
+}
+// a choice's place in such a list (0, the first, when it is not listed)
+inline int rate_index(const int* list, int count, int choice) {
+    for (int i = 0; i < count; i++)
+        if (list[i] == choice) return i;
+    return 0;
+}
 
 // Dynamic resolution: the lowest factor (0: off), as the Settings window offers it
 inline constexpr float kDynMins[] = {0.0f, 0.75f, 0.5f};

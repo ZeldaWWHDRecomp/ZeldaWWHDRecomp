@@ -52,6 +52,11 @@
 #ifdef WWHD_DECOMP_FAST
 #include "cheapib/cheapib_s2.h"  // (stage 2: material animations noted on the logic pass)
 #endif
+#if WWHD_DECOMP
+#include "t60/t60_particles.h"  // (true 60: the particle calc on every step)
+#include "t60/t60.h"  // (t60::tick30: WWHD_T60_PTCL_TRACE)
+#include "t60/t60_draw.h"  // (t60::draw::words_owns)
+#endif
 
 namespace interp {
 bool enabled();
@@ -210,9 +215,58 @@ void for_each_ptcl(uint32_t mgr, uint32_t group, F&& f) {
     }
 }
 
+// debug: WWHD_T60_PTCL_TRACE=FILE: the particles at each 30 Hz frame end (the calc of the frame's tick30 step, before
+// any drawing blend or history state is written), one line per group with particles: frame tag (g_Counter.mCounter0
+// 101FF558), group, count, mean age, centroid x y z, mean size, mean alpha (particle trajectory runs: B at N steps
+// against A at 30 Hz, tools/ptcltraj.py)
+void ptcl_trace(uint32_t mgr, uint32_t group) {
+    static FILE* f = [] {
+        const char* e = getenv("WWHD_T60_PTCL_TRACE");
+        FILE* o = e ? fopen(e, "w") : nullptr;
+        if (o) setvbuf(o, nullptr, _IOLBF, 0);
+        return o;
+    }();
+    if (!f) return;
+    unsigned n = 0;
+    double age = 0, c[3] = {0, 0, 0}, sz = 0, al = 0;
+    for_each_ptcl(mgr, group, [&](uint32_t p, uint32_t) {
+        const PtclState s = read_ptcl(p);
+        n++;
+        age += s.age;
+        for (int k = 0; k < 3; k++) c[k] += wf(s.w[kWPos + k]);
+        sz += wf(s.w[kWSize]);
+        al += wf(s.w[kWAlpha]);
+    });
+    if (!n) return;
+    fprintf(f, "%u %u %u %.4f %.3f %.3f %.3f %.4f %.4f\n", ld32(GD(0x101FF558)), group, n, age / n, c[0] / n, c[1] / n,
+            c[2] / n, sz / n, al / n);
+}
+
+// true 60 (decomp build): emitter translations (+0x22C) drawn at W. The bow wave's draw (dPa_waveEcallBack::draw
+// 025A9508, its executeAfter 025A92F4 in the callback's slot 0x24) builds its head vertex from the emitter translation, the
+// newest step's, while its particles and the hull are drawn at W (draw_lag steps back): the head ran one step ahead of the
+// hull (22 units while sailing). t60_ptcl_step keeps a short per-step history of such an emitter's translation and writes
+// W's for the pass; it is put back at the next pass start (fx_pass_start / ptcl_restore) when the words are still the
+// drawn ones (an execute that set them since keeps its value). Draw only. WWHD_T60_EMTR_DRAW=0: off (the negative control).
+struct EmtrApplied {
+    uint32_t emtr;
+    uint32_t exact[3], drawn[3];
+};
+std::vector<EmtrApplied> g_emtr_applied;
+constexpr uint32_t kEmtrTrans = 0x22C;
+void emtr_restore() {
+    for (const EmtrApplied& a : g_emtr_applied) {
+        uint32_t* w = (uint32_t*)ppc_ptr(a.emtr + kEmtrTrans);
+        if (w[0] == a.drawn[0] && w[1] == a.drawn[1] && w[2] == a.drawn[2])
+            for (int i = 0; i < 3; i++) w[i] = a.exact[i];
+    }
+    g_emtr_applied.clear();
+}
+
 void ptcl_restore() {
     for (const Applied& a : g_ptcl_applied) write_ptcl(a.ptcl, a.w);
     g_ptcl_applied.clear();
+    emtr_restore();
 }
 // a particle's drawn values at t (from its exact values and what the logic pass recorded)
 void ptcl_mid(const Applied& ap, float t, uint32_t* mid) {
@@ -379,6 +433,28 @@ void temp_reapply(float t) {  // blended hold pass, after temp_restore at the pa
     g_temp.swap(g_temp_keep);
     g_temp_keep.clear();
 }
+// Logic about to compute the words in [lo, lo + len) (a world system's calc on a pass where it steps): the exact values
+// of the ones still shown blended are put back (in reverse order: an s16 entry keeps its whole word) and their entries
+// dropped, also those kept for a later blended hold pass, so the calc starts from the exact state and neither the pass
+// start's put-back nor a later re-apply writes the old values over what it computes. Frame interpolation alone: never
+// (the world block runs on logic passes, after the pass start put everything back); true 60 (decomp build): the steps
+// before the tick30 step are blended hold passes that run converted world systems.
+// Decomp build only (the normal build: no change).
+void temp_put_back(uint32_t lo, uint32_t len) {
+#if !WWHD_DECOMP
+    (void)lo, (void)len;
+    return;
+#else
+    auto in = [&](const Temp& e) { return e.addr - lo < len; };
+    int n = 0;
+    for (auto it = g_temp.rbegin(); it != g_temp.rend(); ++it)
+        if (in(*it)) st32(it->addr, it->exact), n++;
+    static uint64_t calls = 0;  // (the log: the 1st, 2nd, 4th, 8th, ... time; never without true 60)
+    if (n && (++calls, !(calls & (calls - 1)))) LOG("[interp-fx] %d blended words put back before a world system's calc at %08X (%llu times)", n, lo, (unsigned long long)calls);
+    g_temp.erase(std::remove_if(g_temp.begin(), g_temp.end(), in), g_temp.end());
+    g_temp_keep.erase(std::remove_if(g_temp_keep.begin(), g_temp_keep.end(), in), g_temp_keep.end());
+#endif
+}
 bool plausible(float v) { return v == 0.0f || (std::fabs(v) > 1e-12f && std::fabs(v) < 1e9f); }
 
 // ---------------------------------------------------------------------------------------------
@@ -425,6 +501,7 @@ struct SwayRec {
 void sway_calc(Cpu* c, int k, void (*orig)(Cpu*)) {
     const SwayKind& sk = kSway[k];
     uint32_t pk = c->r[3];
+    temp_put_back(pk + sk.base, sk.stride * sk.slots);  // (the calc reads its slots: exact values only)
     orig(c);
     if (!on(16) || !halfway()) return;
     SwayRec& r = g_sway[k];
@@ -738,6 +815,10 @@ no_dump:
 
 // particle calc of groups 7-8 in dScnPly_Draw, followed by g_Counter.mTimer++
 extern "C" void hook_025A8148(Cpu* c) {
+#if WWHD_DECOMP
+    // (true 60 step passes: the calc runs; the decompilation counts mTimer once per 30 Hz frame, t60/t60_particles.h)
+    if (t60::particles::steps_here()) return f_025A8148_orig(c);
+#endif
     if (hold_back()) {
         st32(kCounterTimer, ld32(kCounterTimer) - 1);  // cancels the increment that follows
         return;  // particles are held back on hold passes anyway
@@ -748,6 +829,7 @@ extern "C" void hook_025A8148(Cpu* c) {
 extern "C" void hook_025D0994(Cpu* c) {
     if (hold_back()) return;
     uint32_t pk = c->r[3];
+    temp_put_back(pk + kWoodAnm, kWoodAnmStride * kWoodAnms);  // (as sway_calc)
     f_025D0994_orig(c);
     if (!on(16) || !halfway()) return;
     bool valid = g_wood.pkt == pk && g_wood.step + 1 == interp::hold_pass_count() && g_wood.w.size() == kWoodAnms * kWoodWords;
@@ -1097,6 +1179,10 @@ void line_packet(Cpu* c, void (*original)(Cpu*), ClothPacketKind kind, const Lin
     if (!on(16) || interp::in_execute()) { original(c); return; }
     static const bool off = getenv("WWHD_INTERP_LINES") && !atoi(getenv("WWHD_INTERP_LINES")); // diagnostic ablation
     if (off) { original(c); return; }
+#if WWHD_DECOMP
+    // (true 60: a converted owner's lines are drawn at the world's time by t60_draw's words history)
+    if (t60::draw::words_owns(t60::draw::drawing())) { original(c); return; }
+#endif
     const uint32_t packet = c->r[3];
     const uint32_t count = ld16(packet+lay.count);
     const uint32_t points = std::min(c->r[4] & 0xFFFFu, uint32_t(ld16(packet+lay.points)));
@@ -1208,12 +1294,19 @@ extern "C" void hook_0215F9E4(Cpu* c) {
 }
 
 namespace { void fx_step_stats(); }
+namespace { float g_deferred_t = -1.0f; }  // (fx_hold_blend_deferred: the fraction; -1 none)
 // start of every pass (interp.cpp, per-frame function): the blended values only live until the
 // pass has been painted (the painter runs after the per-frame function, before the next one). What
 // was blended is kept for the pass: a blended hold pass applies it again at its fraction.
 namespace interp {
 void light_trace_flush();
 void fx_pass_start() {
+    if (g_deferred_t >= 0.0f) {  // (a pass without the play scene's draw: its deferred blends never went in)
+        g_deferred_t = -1.0f;
+        g_temp.swap(g_temp_keep);  // (kept as if applied, so that this pass start keeps them for the step's later passes)
+        g_ptcl_applied.swap(g_ptcl_keep);
+        if (g_wave_keep) g_wave.pkt = g_wave_keep, g_wave_keep = 0;
+    }
     light_trace_flush();
     g_passes++;
     if (!g_packet_before.empty()) g_packet_before.clear();  // (records a 40 fps blended record pass replaced: its own blends only)
@@ -1221,6 +1314,7 @@ void fx_pass_start() {
     for (const Applied& a : g_ptcl_applied) write_ptcl(a.ptcl, a.w);
     g_ptcl_keep = std::move(g_ptcl_applied);
     g_ptcl_applied.clear();
+    emtr_restore();  // (the emitter translations drawn at W, back before the pass's executes)
     g_wave_keep = 0;
     wave_restore();
     temp_restore();
@@ -1237,7 +1331,19 @@ void fx_hold_blend(float t) {
     wave_reapply(t);
     temp_reapply(t);
 }
+// True 60 (decomp build): a blended hold pass that is a step before the tick30 step runs the converted processes'
+// executes, which must see the game's exact values (the blends are drawing only). Its blends go in when the play
+// scene's draw starts (hook_025AF8A0: after every execute of the pass, before the drawing).
+void fx_hold_blend_deferred(float t) { g_deferred_t = t; }
 }  // namespace interp
+namespace {
+void deferred_hold_blend() {
+    if (g_deferred_t < 0.0f) return;
+    const float t = g_deferred_t;
+    g_deferred_t = -1.0f;
+    interp::fx_hold_blend(t);
+}
+}  // namespace
 
 // dScnPly_Draw: start of drawing on every pass
 // The grey-scale screen (mDoGph_calcMonotone 025F0840, from the environment's execute: once per
@@ -1253,6 +1359,7 @@ void fx_monotone_step(int16_t before, int16_t after) {
 }
 }  // namespace interp
 extern "C" void hook_025AF8A0(Cpu* c) {
+    deferred_hold_blend();  // (true 60 steps: the blends after the pass's executes)
     // (already done at the pass start; a blended hold pass has its particles re-applied by now)
     if (!(interp::hold_pass() && !interp::record_pass())) ptcl_restore();
     if (interp::logic_pass()) fx_step_stats();
@@ -1268,12 +1375,403 @@ extern "C" void hook_025AF8A0(Cpu* c) {
     f_025AF8A0_orig(c);
 }
 
+#if WWHD_DECOMP
+// true 60 (t60/t60_particles.h): on a step pass the decompiled calc steps at dt; the particles are drawn at
+// the step the picture shows (W, draw_lag steps behind the newest) from a short per-step history, and put back to the
+// exact state at the next pass start (g_ptcl_applied, restored by fx_pass_start / ptcl_restore)
+namespace {
+struct PtclHist {
+    uint64_t stamp[4] = {0, 0, 0, 0};
+    uint32_t w[4][kPW];
+    float age = -1e30f;
+    int n = 0;  // entries used (newest at (n - 1) % 4)
+};
+std::unordered_map<uint32_t, PtclHist> g_ptcl_hist;
+uint64_t g_ptcl_hist_sweep = 0;
+// (see emtr_restore): the translation history of the emitters whose draw reads it
+struct EmtrHist {
+    uint64_t stamp[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    uint32_t w[8][3];
+    bool t30[8];
+    int n = 0;
+};
+std::unordered_map<uint32_t, EmtrHist> g_emtr_hist;
+uint64_t g_emtr_hist_sweep = 0;
+bool emtr_draw_on() {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_T60_EMTR_DRAW");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+// The weather wind lines and other tick30-only emitters (2026-11-23: kankyo wether_move_windline 0257836C -> dKyr_wind_move
+// 025642AC places its emitters, no callback, once per 30 Hz frame; extended 2026-11-24 to every emitter): an
+// emitter whose translation changes on tick30 steps only is drawn between its frame-end translations at W's place in the
+// frame, as the interpolated world (not across a jump of kEmtrBlendJump);
+// one that moves on the earlier steps too is drawn at W's step. WWHD_T60_EMTR_BLEND=0: the frame-end blend off (W's step
+// only; the negative control for the wind lines)
+bool emtr_blend_on() {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_T60_EMTR_BLEND");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+bool emtr_follow_ptcl_on() {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_T60_EMTR_FOLLOWPTCL");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+// the FollowEmtr particles of an emitter drawn blended: their drawn place shifted by d (restored with the particles' exact
+// values at the next pass start: an entry in g_ptcl_applied, the existing one when the history already drew it at W)
+bool frame30_kind(uint32_t p);  // (below: the decomp's 30 Hz particles, drawn between their own frame ends)
+void emtr_shift_followers(uint32_t emtr, const float* d) {
+    for (uint32_t list : {kEmtrPtcls, kEmtrChildren}) {
+        int guard = 0;
+        for (uint32_t pl = ld32(emtr + list); pl && guard < 100000; pl = ld32(pl + 0xC), guard++) {
+            const uint32_t p = ld32(pl);
+            if (!p || !(ld32(p + 0xCC) & 0x20u)) continue;
+            if (frame30_kind(p)) continue;  // (their frame-end places carry the emitter's: not shifted twice)
+            bool listed = false;
+            for (size_t i = g_ptcl_applied.size(); i-- > 0;)
+                if (g_ptcl_applied[i].ptcl == p) { listed = true; break; }
+            if (!listed) {
+                Applied ap{p};
+                const PtclState st = read_ptcl(p);
+                memcpy(ap.w, st.w, sizeof ap.w);
+                memcpy(ap.a, st.w, sizeof ap.a);
+                ap.is_born = false;
+                ap.extras = false;
+                g_ptcl_applied.push_back(ap);
+            }
+            for (int c = 0; c < 3; c++) {
+                uint32_t* wc = (uint32_t*)ppc_ptr(p + kPtclWord[kWPos + c]);
+                *wc = fw(wf(*wc) + d[c]);
+            }
+        }
+    }
+}
+bool ptcl_bornback_on() {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_T60_PTCL_BORNBACK");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+constexpr uint32_t kEmtrDynScale = 0x220;  // (JPABaseEmitter::mGlobalDynamicsScale: global = local x it + offset)
+// follow-up (2026-11-24, swim WATER_MARK): the decomp's 30 Hz particles (JPA_particle_t60.h frame30:
+// a callback that creates actors from the particle's place, Link's water drop daPy_waterDropPcallBack_c 02414048) move only
+// on the tick30 step; held over the earlier steps they would be drawn as a 30 Hz staircase. Drawn instead between their
+// last two frame-end places at W's time (lag steps behind the newest step: on the tick30 step (N - lag) / N of the way from
+// the previous frame end to the new one, on the earlier step k (N + k - lag) / N), restored at the next pass start like the
+// history's values. A particle's first frame: the previous frame end taken one frame back along its velocity (x the
+// emitter's dynamics scale). WWHD_T60_PTCL_FRAME30=0 (the decomp's switch): off here too.
+struct Frame30 { uint64_t stamp; float age; uint32_t prev[3], cur[3]; bool have_prev; };
+std::unordered_map<uint32_t, Frame30> g_frame30;
+uint64_t g_frame30_sweep = 0;
+bool frame30_on() {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_T60_PTCL_FRAME30");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+// the decomp's kFrame30Execs (JPA_particle_t60.h): the particle callbacks that create actors from the particle's place
+//   02414048 daPy_waterDropPcallBack_c::execute (Link's water drops: WATER_MARK)
+constexpr uint32_t kFrame30Execs[] = {0x02414048u};
+bool frame30_kind(uint32_t p) {
+    const uint32_t cb = ld32(p + 0xC8);
+    if (!cb) return false;
+    const uint32_t vt = ld32(cb);
+    if (!vt) return false;
+    const uint32_t ex = ld32(vt + 0x1C);  // (JPAParticleCallbackVtable::execute)
+    for (uint32_t k : kFrame30Execs)
+        if (ex == k) return true;
+    return false;
+}
+bool frame30_picture(uint32_t p, const PtclState& cur, uint32_t emtr, uint64_t stamp, int lag) {
+    if (!frame30_on() || !frame30_kind(p)) return false;
+    const int N = (int)(wwhd_t60_steps ? wwhd_t60_steps : 1), k = (int)wwhd_t60_stepk;
+    Frame30& f = g_frame30[p];
+    if (f.stamp == 0 || cur.age < f.age || f.stamp + (uint64_t)(2 * N) < stamp) {  // (a new particle in this slot)
+        f = Frame30{};
+        memcpy(f.cur, &cur.w[kWPos], sizeof f.cur);
+        if (emtr) {  // (one frame back along its velocity: the previous frame end it would have had)
+            for (int c = 0; c < 3; c++)
+                f.prev[c] = fw(wf(cur.w[kWPos + c]) - wf(*(const uint32_t*)ppc_ptr(p + kPtclVel + 4 * c)) * (float)ldf32(emtr + kEmtrDynScale + 4 * c));
+            f.have_prev = true;
+        }
+    } else if (t60::tick30() && memcmp(f.cur, &cur.w[kWPos], sizeof f.cur)) {  // (the frame's update: a new frame end)
+        memcpy(f.prev, f.cur, sizeof f.prev);
+        memcpy(f.cur, &cur.w[kWPos], sizeof f.cur);
+        f.have_prev = true;
+    }
+    f.stamp = stamp;
+    f.age = cur.age;
+    if (lag <= 0 || !f.have_prev) return true;
+    const float t = (float)((k >= N ? 0 : N) + k - lag) / (float)N;
+    if (!(t >= 0.0f && t < 1.0f)) return true;
+    uint32_t drawn[kPW];
+    memcpy(drawn, cur.w, sizeof drawn);
+    for (int c = 0; c < 3; c++) drawn[kWPos + c] = fw(lerp_f(wf(f.prev[c]), wf(f.cur[c]), t));
+    Applied ap{p};
+    memcpy(ap.w, cur.w, sizeof ap.w);
+    memcpy(ap.a, cur.w, sizeof ap.a);
+    ap.is_born = false;
+    ap.extras = false;
+    g_ptcl_applied.push_back(ap);
+    write_ptcl(p, drawn);
+    if (stamp >= g_frame30_sweep + 64) {
+        g_frame30_sweep = stamp;
+        for (auto it = g_frame30.begin(); it != g_frame30.end();)
+            it = it->second.stamp + 16 < stamp ? g_frame30.erase(it) : std::next(it);
+    }
+    return true;
+}
+constexpr float kEmtrBlendJump = 1500.0f;  // (sum of |dx|, |dy|, |dz| over a frame: the fastest movers seen ~100)
+// the group's emitters after the step's calc: record the translation; with a lag, draw W's
+void emtr_step(uint32_t mgr, uint32_t group, uint64_t stamp, int lag) {
+    int guard = 0;
+    const bool t30 = t60::tick30();
+    for (uint32_t el = ld32(mgr + kMgrGroups + 12 * group); el && guard < 100000; el = ld32(el + 0xC), guard++) {
+        const uint32_t emtr = ld32(el);
+        if (!emtr) continue;
+        const uint32_t cb = ld32(emtr + 0x1E4), vt = cb ? ld32(cb) : 0;
+        const bool wave = vt && ld32(vt + 0x24) == 0x025A92F4u;  // (the bow wave's executeAfter: its draw reads the translation)
+        // (every emitter, 2026-11-24 from a sweep of the drawn emitters: emitters with callbacks or placed by their owner
+        // that move on tick30 only are blended between frame ends too; one moved per step is drawn at W's step)
+        // (not dPa_simpleEcallBack's emitters, executeAfter 025A4AE0: one emitter emits at every queued place of the frame,
+        // its translation is the last of them, no place of its own: a blend between two of them is nowhere (sweep gm, P7))
+        if (vt && ld32(vt + 0x24) == 0x025A4AE0u) continue;
+        const uint32_t* cur = (const uint32_t*)ppc_ptr(emtr + kEmtrTrans);
+        EmtrHist& h = g_emtr_hist[emtr];
+        if (h.n && h.stamp[(h.n - 1) % 8] + 8 < stamp) h = EmtrHist{};
+        if (!h.n || h.stamp[(h.n - 1) % 8] != stamp) h.n++;
+        const int i = (h.n - 1) % 8;
+        h.stamp[i] = stamp;
+        h.t30[i] = t30;
+        memcpy(h.w[i], cur, sizeof h.w[i]);
+        if (lag > 0) {
+            const uint64_t want = stamp - (uint64_t)lag;
+            // the entries newest first: W's step, the frame end at or before it (e0) and the one after it (e1)
+            int jw = -1, j0 = -1, j1 = -1;
+            bool steady = true;  // (no change between e0 and W's step: a tick30-only mover so far)
+            for (int k = 0; k < 8 && k < h.n; k++) {
+                const int j = (h.n - 1 - k) % 8;
+                if (h.stamp[j] != stamp - (uint64_t)k) break;  // (a gap: no history over it)
+                if (h.stamp[j] > want && h.t30[j]) j1 = j;      // (the last one found going back: the first after W)
+                if (h.stamp[j] == want) jw = j;
+                if (h.stamp[j] <= want && h.t30[j]) { j0 = j; break; }
+            }
+            uint32_t drawn[3];
+            bool have = false;
+            if (jw >= 0) {
+                memcpy(drawn, h.w[jw], sizeof drawn);
+                have = true;
+                if (!wave && emtr_blend_on() && j0 >= 0 && j1 >= 0 && !h.t30[jw]) {
+                    for (int k = 0; k < 8 && k < h.n; k++) {  // (the earlier steps from e0 up to W's step held e0's value)
+                        const int j = (h.n - 1 - k) % 8;
+                        if (h.stamp[j] > want || h.stamp[j] <= h.stamp[j0]) continue;
+                        if (memcmp(h.w[j], h.w[j0], sizeof h.w[j])) steady = false;
+                    }
+                    float jump = 0;  // (a teleport between the frame ends, e.g. a pooled emitter re-placed: no blend)
+                    for (int c = 0; c < 3; c++) jump += std::fabs(wf(h.w[j1][c]) - wf(h.w[j0][c]));
+                    if (steady && jump < kEmtrBlendJump) {
+                        const float f = (float)(want - h.stamp[j0]) / (float)(h.stamp[j1] - h.stamp[j0]);
+                        for (int c = 0; c < 3; c++) drawn[c] = fw(lerp_f(wf(h.w[j0][c]), wf(h.w[j1][c]), f));
+                        // (sweep mt, Magtail: the particles that follow the emitter (FollowEmtr: status 0x20, their offset is the
+                        // emitter centre on every calc) move with the drawn translation: shifted by the blend's offset)
+                        if (emtr_follow_ptcl_on()) {
+                            float d[3];
+                            for (int c = 0; c < 3; c++) d[c] = wf(drawn[c]) - wf(h.w[jw][c]);
+                            if (d[0] != 0.0f || d[1] != 0.0f || d[2] != 0.0f) emtr_shift_followers(emtr, d);
+                        }
+                    }
+                }
+            }
+            if (have && memcmp(drawn, cur, sizeof drawn)) {
+                EmtrApplied ap{emtr};
+                memcpy(ap.exact, cur, sizeof ap.exact);
+                memcpy(ap.drawn, drawn, sizeof ap.drawn);
+                g_emtr_applied.push_back(ap);
+                memcpy((uint32_t*)ppc_ptr(emtr + kEmtrTrans), drawn, sizeof drawn);
+            }
+        }
+        // debug: WWHD_T60_EMTRDRAWLOG=path: the step stamp, the emitter and the translation its draw reads on this pass
+        static FILE* dl = [] {
+            const char* e = getenv("WWHD_T60_EMTRDRAWLOG");
+            FILE* o = e ? fopen(e, "w") : nullptr;
+            if (o) setvbuf(o, nullptr, _IOFBF, 1 << 16);
+            return o;
+        }();
+        if (dl) {
+            fprintf(dl, "%llu %08X %.3f %.3f %.3f\n", (unsigned long long)stamp, emtr, (double)ldf32(emtr + kEmtrTrans),
+                    (double)ldf32(emtr + kEmtrTrans + 4), (double)ldf32(emtr + kEmtrTrans + 8));
+        }
+    }
+    if (stamp >= g_emtr_hist_sweep + 64) {
+        g_emtr_hist_sweep = stamp;
+        for (auto it = g_emtr_hist.begin(); it != g_emtr_hist.end();)
+            it = it->second.n && it->second.stamp[(it->second.n - 1) % 8] + 16 < stamp ? g_emtr_hist.erase(it) : std::next(it);
+    }
+}
+uint64_t g_ptcl_step_pass = ~0ull;
+void t60_ptcl_step(Cpu* c) {
+    if (g_ptcl_step_pass != interp::pass_count()) {  // (once per pass: every group's calc of the pass comes after it)
+        g_ptcl_step_pass = interp::pass_count();
+        ptcl_restore();  // (a blended re-apply of an earlier pass: the calc starts from the exact state)
+        t60::particles::count(0);
+    }
+    uint32_t mgr = c->r[3], group = c->r[4];
+    f_0282167C_orig(c);
+    if (group >= 16) return;
+    if (t60::tick30()) ptcl_trace(mgr, group);  // (WWHD_T60_PTCL_TRACE: the frame end)
+    const uint64_t stamp = t60::particles::step_stamp();
+    const int lag = t60::particles::draw_lag();
+    for_each_ptcl(mgr, group, [&](uint32_t p, uint32_t emtr) {
+        PtclState cur = read_ptcl(p);
+        if (frame30_picture(p, cur, emtr, stamp, lag)) return;  // (a 30 Hz particle, drawn between its frame ends)
+        PtclHist& h = g_ptcl_hist[p];
+        if (cur.age < h.age || (h.n && h.stamp[(h.n - 1) % 4] + 4 < stamp)) h = PtclHist{};  // (a new particle in this slot)
+        if (!h.n || h.stamp[(h.n - 1) % 4] != stamp) h.n++;
+        const int i = (h.n - 1) % 4;
+        h.stamp[i] = stamp;
+        memcpy(h.w[i], cur.w, sizeof cur.w);
+        h.age = cur.age;
+        if (lag <= 0) return;
+        const uint64_t want = stamp - (uint64_t)lag;
+        for (int k = 0; k < 4 && k < h.n; k++) {
+            const int j = (h.n - 1 - k) % 4;
+            if (h.stamp[j] != want) continue;
+            if (memcmp(h.w[j], cur.w, sizeof cur.w)) {
+                Applied ap{p};
+                memcpy(ap.w, cur.w, sizeof ap.w);
+                memcpy(ap.a, h.w[j], sizeof ap.a);
+                ap.is_born = false;
+                ap.extras = true;
+                g_ptcl_applied.push_back(ap);
+                write_ptcl(p, h.w[j]);
+                t60::particles::count(1);
+            }
+            return;
+        }
+        t60::particles::count(2);  // born after W: drawn at its newest state
+        // follow-up (sweep rerun17 bk3, the exec-0 short-life particles): drawn at its newest state, a particle
+        // born after W showed the same place again on the next pass (W's step is then its birth step): every new particle
+        // held one pass (fracT 0.75). Drawn instead `lag` steps back along its own step move (velocity x dt x the emitter's
+        // dynamics scale), as the interp path draws a born particle; restored at the next pass start like the history's.
+        // WWHD_T60_PTCL_BORNBACK=0: off
+        // (every particle without a history entry at W, not only on its first pass: at N 4 (W = 3 steps back) one born after
+        // W has no W entry for 3 passes; drawn at its newest state on its 2nd / 3rd passes it ran ahead, then jumped back
+        // to its birth state when W reached it (jalh N 4 flames: 20 / 4 / 12 per pass, then 4): drawn back lag steps on
+        // every such pass, the next pass with a W entry continues smoothly)
+        if (ptcl_bornback_on() && emtr) {
+            const float back = (float)lag / (float)(wwhd_t60_steps ? wwhd_t60_steps : 1);  // (lag steps of 1 / N frames)
+            float d[3], d2 = 0;
+            for (int k = 0; k < 3; k++) {
+                d[k] = wf(*(const uint32_t*)ppc_ptr(p + kPtclVel + 4 * k)) * (float)ldf32(emtr + kEmtrDynScale + 4 * k) * back;
+                d2 += d[k] * d[k];
+            }
+            // (a FollowEmtr particle, status 0x20: its offset is the emitter centre on every calc: back along the emitter's
+            // move over the lag steps too (the translation history of emtr_step, not yet holding this step; the dynamics
+            // scale as the emitter matrix applies it, rotation left out); sweep sail, the wake / splash particles)
+            if (ld32(p + 0xCC) & 0x20u) {
+                auto eh = g_emtr_hist.find(emtr);
+                if (eh != g_emtr_hist.end() && eh->second.n) {
+                    const EmtrHist& h2 = eh->second;
+                    for (int k = 0; k < 8 && k < h2.n; k++) {
+                        const int j = (h2.n - 1 - k) % 8;
+                        if (h2.stamp[j] != stamp - 1 - (uint64_t)k) break;  // (a gap: no move known)
+                        if (h2.stamp[j] != stamp - (uint64_t)lag) continue;
+                        d2 = 0;
+                        for (int c = 0; c < 3; c++) {
+                            d[c] += (wf(*(const uint32_t*)ppc_ptr(emtr + kEmtrTrans + 4 * c)) - wf(h2.w[j][c])) *
+                                    (float)ldf32(emtr + kEmtrDynScale + 4 * c);
+                            d2 += d[c] * d[c];
+                        }
+                        break;
+                    }
+                }
+            }
+            if (d2 > 1e-8f && d2 < 600.0f * 600.0f) {
+                Applied ap{p};
+                memcpy(ap.w, cur.w, sizeof ap.w);
+                memcpy(ap.a, cur.w, sizeof ap.a);
+                ap.is_born = false;
+                ap.extras = false;
+                uint32_t drawn[kPW];
+                memcpy(drawn, cur.w, sizeof drawn);
+                for (int k = 0; k < 3; k++) drawn[kWPos + k] = fw(wf(cur.w[kWPos + k]) - d[k]);
+                g_ptcl_applied.push_back(ap);
+                write_ptcl(p, drawn);
+            }
+        }
+    });
+    if (emtr_draw_on()) emtr_step(mgr, group, stamp, lag);  // (the bow wave's head, the wind lines at W)
+    if (stamp >= g_ptcl_hist_sweep + 64) {
+        g_ptcl_hist_sweep = stamp;
+        for (auto it = g_ptcl_hist.begin(); it != g_ptcl_hist.end();)
+            it = it->second.n && it->second.stamp[(it->second.n - 1) % 4] + 8 < stamp ? g_ptcl_hist.erase(it) : std::next(it);
+    }
+}
+}  // namespace
+#endif
+
+namespace { uint32_t g_jl_mgr = 0; }  // (WWHD_T60_JOINTLOG: the emitter manager its calc saw last)
+// debug (interp.cpp passlog::end_pass): WWHD_T60_JOINTLOG's emitter records, the world groups
+// 0-8 as drawn on this pass (the blended / aligned values are in place until the next pass start); returns their count
+namespace interp {
+uint32_t fx_jointlog_particles(std::vector<uint8_t>& buf) {
+    const uint32_t mgr = g_jl_mgr;
+    if (!mgr) return 0;
+    auto put = [&](const auto& v) {
+        const uint8_t* p = (const uint8_t*)&v;
+        buf.insert(buf.end(), p, p + sizeof v);
+    };
+    uint32_t recs = 0;
+    int guard = 0;
+    for (uint32_t group = 0; group < 9; group++)
+        for (uint32_t el = ld32(mgr + kMgrGroups + 12 * group); el && guard < 100000; el = ld32(el + 0xC), guard++) {
+            const uint32_t emtr = ld32(el);
+            if (!emtr) continue;
+            uint32_t np = 0;
+            for (uint32_t list : {kEmtrPtcls, kEmtrChildren})
+                for (uint32_t pl = ld32(emtr + list); pl && np < 100000; pl = ld32(pl + 0xC)) np += ld32(pl) ? 1 : 0;
+            const uint32_t cb = ld32(emtr + 0x1E4), vt = cb ? ld32(cb) : 0;
+            put((uint8_t)'E'), put(emtr), put(group);
+            for (int k = 0; k < 3; k++) put((float)ldf32(emtr + 0x22C + 4 * k));
+            put(cb), put(vt ? ld32(vt + 0x24) : 0u), put(np);
+            uint32_t m = 0;
+            for (uint32_t list : {kEmtrPtcls, kEmtrChildren})
+                for (uint32_t pl = ld32(emtr + list); pl && m < np; pl = ld32(pl + 0xC)) {
+                    const uint32_t p = ld32(pl);
+                    if (!p) continue;
+                    put(p);
+                    for (int k = 0; k < 3; k++) put((float)ldf32(p + 0x28 + 4 * k));
+                    m++;
+                }
+            recs++;
+        }
+    return recs;
+}
+}  // namespace interp
+
 // JPAEmitterManager::calc(mgr, group)
 extern "C" void hook_0282167C(Cpu* c) {
+    g_jl_mgr = c->r[3];
+#if WWHD_DECOMP
+    // (the world block's groups 0-8 only: the menu groups 9-12 are calculated by dPa_control_c::calcMenu 025A81F8,
+    // which dScnPly_Draw calls outside the world block on every pass, at dt 1 (menu open or not): they stay a 30 Hz
+    // system under frame interpolation's rules below, held on the earlier steps, once per 30 Hz frame on the tick30 step)
+    if (c->r[4] < t60::particles::kMenuGroupFirst && t60::particles::steps_here()) return t60_ptcl_step(c);
+#endif
     if (hold_back()) return;  // no logic on hold passes (it ran twice per step: double speed)
     uint32_t mgr = c->r[3], group = c->r[4];
     if (!on(1) || !halfway() || group >= 16) {
         f_0282167C_orig(c);
+        if (group < 16) ptcl_trace(mgr, group);  // (WWHD_T60_PTCL_TRACE: a logic pass = the frame end)
         return;
     }
     g_ptcl_before.clear();
@@ -1281,6 +1779,7 @@ extern "C" void hook_0282167C(Cpu* c) {
     static int tr = trace_left(0);
     PtclTrace trace;
     f_0282167C_orig(c);
+    ptcl_trace(mgr, group);  // (WWHD_T60_PTCL_TRACE, before the halfway values)
     static const float kCut = 600.0f;
     static int tr_born = trace_left(5);
     const uint64_t step = interp::hold_pass_count();
@@ -1584,6 +2083,10 @@ void rnd_trace(Cpu* c, char fn, bool replayed) {
     n.clear();
     hits = 0;
 }
+#if WWHD_DECOMP
+void t60_rnd_log_extra(FILE* f, unsigned long long logic_step);
+bool t60_test_rng(char fn, uint32_t lr, float max, float* out);  // (t60/t60_test_rng.cpp: WWHD_TEST_RNG_CONST, tests)
+#endif
 // fn: ' ' cM_rnd (fraction), 'F' cM_rndF(max), 'X' cM_rndFX(max) = (fraction - 0.5) * 2 * max
 static void rnd_call(Cpu* c, char fn, void (*orig)(Cpu*)) {
     static int depth = 0;  // cM_rndF / cM_rndFX call cM_rnd: only the outer call counts
@@ -1596,11 +2099,26 @@ static void rnd_call(Cpu* c, char fn, void (*orig)(Cpu*)) {
         for (int k = 0; k < 10 && sp >= 0x10000000; k++) { sp = ld32(sp); if (sp < 0x10000000) break; fprintf(lf, " %08X", ld32(sp + 4)); }
         fprintf(lf, "\n");
     }
-    if (lf && !depth && (c->lr == GC(0x025616CCu) || getenv("WWHD_RND_REGS_ALL")))
+    if (lf && !depth && (c->lr == GC(0x025616CCu) || getenv("WWHD_RND_REGS_ALL")) && c->r[24] >= 0x10000000u)  // (r24 a guest pointer only there)
         fprintf(lf, "REGS %08X %08X %08X %08X %08X %08X %08X L %08X %08X %08X %08X %08X\n", c->r[24], c->r[26], c->r[27], c->r[28], c->r[29], c->r[30], c->r[31],
                 ld32(c->r[24] + 0x14), ld32(c->r[24] + 0x18), ld32(c->r[24] + 0x1C), ld32(c->r[24] + 0x28), ld32(c->r[24] + 0x2C));
-    if (lf && !depth) fprintf(lf, "%llu %d %d %c %08X %08X\n", (unsigned long long)interp::logic_steps(), (int)interp::hold_pass(),
-                               (int)interp::in_execute(), fn, c->lr, ld32(GD(0x101FF9D4)));
+    if (lf && !depth) {
+        fprintf(lf, "%llu %d %d %c %08X %08X", (unsigned long long)interp::logic_steps(), (int)interp::hold_pass(),
+                (int)interp::in_execute(), fn, c->lr, ld32(GD(0x101FF9D4)));
+#if WWHD_DECOMP
+        t60_rnd_log_extra(lf, (unsigned long long)interp::logic_steps());  // (t60/t60_rnd_debug.cpp: step state, WWHD_RND_HBT host chain)
+#endif
+        fprintf(lf, "\n");
+    }
+#if WWHD_DECOMP
+    if (!depth) {  // test aid: random numbers that do not depend on the draw count (default off)
+        float v;
+        if (t60_test_rng(fn, c->lr, fn == ' ' ? 1.0f : (float)c->f[1].ps0, &v)) {
+            c->f[1].ps0 = v;
+            return;
+        }
+    }
+#endif
     if (!on(8) || interp::in_execute() || depth) {
         orig(c);
         return;
@@ -2614,6 +3132,10 @@ namespace interp {
 void fx_ss_reset() {
     g_ptcl_before.clear();
     g_ptcl_applied.clear();
+#if WWHD_DECOMP
+    g_emtr_applied.clear();
+    g_emtr_hist.clear();
+#endif
     g_ptcl_keep.clear();
     g_emtr.clear();
     g_anm.clear();

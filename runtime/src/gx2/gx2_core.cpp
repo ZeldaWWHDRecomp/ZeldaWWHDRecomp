@@ -1,4 +1,6 @@
 #include "gfx/depth_peek.h"
+#include "gfx/capture_schedule.h"
+#include "../fixed_seed.h"
 #include "platform/present_observer.h"
 #include "platform/r5_slow_render.h"
 #include "gfx/display_modes.h"
@@ -1183,6 +1185,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
             static uint64_t swaps = 0;
             latency_test::render_swap(++swaps, render::frame_count());
         }
+        gfx::capture_schedule::g_pass_dump = n >= 7 ? p[6] : 0u;  // (WWHD_DUMP_PASS)
         render::swap();
 #ifdef WWHD_DECOMP_FAST
         if (drawoff::flip_time()) ::note_frames_done();
@@ -1398,7 +1401,7 @@ static bool g_c2_swapped = false;  // drawoff c2: no GX2WaitForVsync since the l
 #endif
 namespace gx2 { uint64_t flips_presented() { return __atomic_load_n(&g_flip_count, __ATOMIC_RELAXED); } }  // live fps in the title
 static uint32 g_swap_interval = 1;  // as set by the game (frame interpolation halves it)
-namespace interp { uint32_t effective_swap_interval(uint32_t game); uint64_t logic_steps(); uint32_t vsync_granule_ticks(); uint64_t step_ticks(uint32_t game); bool paced_step_schedule(); int64_t frame_interval_ns(); int mode(); }
+namespace interp { uint32_t effective_swap_interval(uint32_t game); uint64_t logic_steps(); uint32_t vsync_granule_ticks(); uint64_t step_ticks(uint32_t game); bool paced_step_schedule(); int64_t frame_interval_ns(); int mode(); bool dump_pass_take(int want, uint64_t* step); }
 static std::mutex g_flip_mutex;
 static const auto g_vsync_epoch = std::chrono::steady_clock::now();
 static constexpr std::chrono::nanoseconds kVsyncPeriod(16683333);  // 59.94 Hz
@@ -1976,8 +1979,10 @@ HLE(gx2, GX2CopySurface) {
         render_sync(kSyncCopySurface);
     }
 }
+namespace interp { void dump_pass_copy(uint32_t lr, uint32_t target); }
 HLE(gx2, GX2CopyColorBufferToScanBuffer) {
     NATIVE_COVERAGE(kCopy, c->lr, 1, 1);
+    interp::dump_pass_copy(c->lr, arg(c, 1));  // (test aid WWHD_DUMP_PASS: the TV image's pass)
     std::vector<uint32> p;
     put_struct(p, arg(c, 0), kColorBufferWords);
     p.push_back(arg(c, 1));
@@ -2006,6 +2011,7 @@ HLE(gx2, GX2DrawDone) {
     ret(c, 1);
 }
 namespace dtrace { void on_swap(uint64_t swap, uint64_t steps); }
+namespace test_aids { uint64_t origin_step(); }  // test_aids.cpp: the scenario origin (0 before it)
 HLE(gx2, GX2SwapScanBuffers) {
 #ifdef WWHD_DECOMP_FAST
     if (drawoff::g_trace || drawoff::g_census) drawoff::note_swap();
@@ -2082,11 +2088,31 @@ HLE(gx2, GX2SwapScanBuffers) {
     // previous one travels with its swap (ns; 0: present it as soon as it is ready)
     const uint32_t interval = uncapped_benchmark() ? 0u : uint32_t(std::clamp<int64_t>(interp::frame_interval_ns(), 0, 1'000'000'000));
     if (observeSwap) {
-        {
-            std::lock_guard<std::mutex> lk(g_flip_mutex);
-            if (g_swap_count == UINT64_MAX) present_observer::fail("diagnostic swap ID overflow");
-            else observedSwap = g_swap_count + 1;
+        std::lock_guard<std::mutex> lk(g_flip_mutex);
+        if (g_swap_count == UINT64_MAX) present_observer::fail("diagnostic swap ID overflow");
+        else observedSwap = g_swap_count + 1;
+    }
+    // test aid WWHD_DUMP_PASS (gfx/capture_schedule.h): the frame dump is chosen here, on the pass that drew it,
+    // and travels with the swap (word 6: step + 1); the renderers then dump only this
+    static const int dumpPass = gfx::capture_schedule::pass_select(getenv("WWHD_DUMP_PASS"));
+    if (dumpPass != -2) {
+        static const auto dumpSteps = gfx::capture_schedule::parse(getenv("WWHD_DUMP_FRAMES"));
+        // WWHD_DUMP_PASS_ORIGIN=1: steps counted from the scenario origin (nothing before it): the same steps of the
+        // scenario in every run, wherever a state load lands
+        static const bool fromOrigin = fixed_seed::enabled_value(getenv("WWHD_DUMP_PASS_ORIGIN"));
+        uint64_t drawn = 0, at = 0;
+        bool due = interp::dump_pass_take(dumpPass, &drawn);  // (the image's pass and step: interp.cpp)
+        if (due && fromOrigin) {
+            const uint64_t origin = test_aids::origin_step();
+            due = origin && drawn >= origin;
+            at = drawn - origin;
+        } else if (due) {
+            at = fixed_seed::step_clock() ? fixed_seed::script_frame(0) - (steps - drawn) : drawn;
         }
+        due = due && gfx::capture_schedule::contains(dumpSteps, at);
+        emit_host(OP_SWAP, {ab, hold ? 1u : 0u, capture ? 1u : 0u, uint32_t(observedSwap), uint32_t(observedSwap >> 32),
+                            interval, due ? uint32_t(at + 1) : 0u});
+    } else if (observeSwap) {
         // Explicit ID travels with this command; never sample mutable producer
         // counters or drawable-acquisition timing on the render thread.
         emit_host(OP_SWAP, {ab, hold ? 1u : 0u, capture ? 1u : 0u,

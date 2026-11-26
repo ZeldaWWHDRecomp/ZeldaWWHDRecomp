@@ -409,6 +409,10 @@ bool camera_turned_by_player() { return recent(g_manual_step, 2) || (g_synth && 
 
 using namespace mods;
 
+#if WWHD_DECOMP
+float t60_camera_frame_take(int slot, float* pending);  // t60/t60_camera_input.cpp (decomp build only)
+#endif
+
 // ---- dCamera_c::manualCamera sites ----
 // speed for this step: mouse (degrees -> speed units with this mode's f25) or the stick, linear
 static void manual_speed(Cpu* c) {
@@ -419,8 +423,12 @@ static void manual_speed(Cpu* c) {
         std::lock_guard<std::mutex> lk(g_mu);
         mouse = g_synth && g_synth_step + 1 >= step();
         if (mouse) {
+#if WWHD_DECOMP
+            dx = t60_camera_frame_take(0, &g_direct_dx);  // (true 60: the frame's amount on each step, t60/t60_camera_input.cpp)
+#else
             dx = g_direct_dx;
             g_direct_dx = 0;
+#endif
         }
     }
     float speed;
@@ -478,8 +486,12 @@ void manual_pitch_rate(Cpu* c, double per) {
     float dy;
     {
         std::lock_guard<std::mutex> lk(g_mu);
+#if WWHD_DECOMP
+        dy = t60_camera_frame_take(1, &g_direct_dy);  // (true 60: the frame's amount on each step, t60/t60_camera_input.cpp)
+#else
         dy = g_direct_dy;
         g_direct_dy = 0;
+#endif
     }
     if (!(std::fabs(per) > 0.01)) return;
     // mouse down (dy > 0) looks down: V grows, so f28 < 0 (the other way with Invert camera up/down)

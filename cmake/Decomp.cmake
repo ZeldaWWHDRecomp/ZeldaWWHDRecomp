@@ -639,7 +639,8 @@ function(wwhd_decomp_link target)
       PROPERTIES INCLUDE_DIRECTORIES "${WWHD_DECOMP_DIR}/tools/verify/include")
     target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp"
       "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp_mods.cpp"
-      "${CMAKE_SOURCE_DIR}/tools/decomp_build/hooks_none.cpp")
+      "${CMAKE_SOURCE_DIR}/tools/decomp_build/hooks_none.cpp"
+      "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_draw.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_world.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_ui.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_audio.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_particles.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_rnd_debug.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_link_trace.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_evlog.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_camera_input.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_test_rng.cpp")  # (true 60 Hz logic: the timebase the units read)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
   else()  # (the game units: up to the end of this block)
   # WWHD_DECOMP_THINLTO: ThinLTO inside each unit (its sources and glue are optimised together when `ld -r` merges
@@ -800,9 +801,11 @@ function(wwhd_decomp_link target)
   endif()
   set_source_files_properties("${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" ${hook_srcs}
     PROPERTIES INCLUDE_DIRECTORIES "${WWHD_DECOMP_DIR}/tools/verify/include")
+  # runtime/src/t60: true 60 Hz game logic, decomp build only (the decompilation's true60.h reads its timebase)
   target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp"
     "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp_mods.cpp"
-    ${hook_srcs} ${objs})
+    ${hook_srcs}
+    "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_draw.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_world.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_ui.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_audio.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_particles.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_rnd_debug.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_link_trace.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_evlog.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_camera_input.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/t60/t60_test_rng.cpp" ${objs})
   target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
   endif()  # (WWHD_DECOMP_RUNTIME_ONLY)
   # cheap in-between frames (runtime/src/cheapib/cheapib.h): the decomp's PORT_CHEAPIB_SKIP_DRAW point links in every

@@ -41,10 +41,25 @@ struct KankyoKeep {
     uint64_t step = ~0ull;
     bool valid = false;
     std::vector<uint32_t> before = std::vector<uint32_t>(kEnvWords), after = std::vector<uint32_t>(kEnvWords);
+    // the pass without logic since its KANKYO draw began: the words as they stood then (pre: before the put-back,
+    // start: after it); put back at the next pass start (kankyo_pass_start)
+    bool hold_open = false;
+    std::vector<uint32_t> hold_pre = std::vector<uint32_t>(kEnvWords), hold_start = std::vector<uint32_t>(kEnvWords);
 } g_ky;
 bool keep_on() {
     static const bool off = getenv("WWHD_INTERP_KANKYO_KEEP") && !atoi(getenv("WWHD_INTERP_KANKYO_KEEP"));
     return !off;
+}
+// The hold pass's own draw writes put back at the next pass start (debug
+// WWHD_INTERP_KANKYO_HOLD_END=0: off, the negative control)
+// Decomp build only: plain frame interpolation (the normal build) keeps the hold pass's own writes, as before.
+bool hold_end_on() {
+#if WWHD_DECOMP
+    static const bool off = getenv("WWHD_INTERP_KANKYO_HOLD_END") && !atoi(getenv("WWHD_INTERP_KANKYO_HOLD_END"));
+    return !off;
+#else
+    return false;
+#endif
 }
 // the process is the KANKYO process (its draw is dKy_Draw)
 bool is_kankyo(uint32_t proc) {
@@ -76,6 +91,7 @@ void kankyo_draw(uint32_t proc, bool begin) {
     }
     if (!begin || !k.valid || k.step != step) return;
     uint32_t* m = (uint32_t*)ppc_ptr(kEnvLight);
+    if (hold_end_on() && !k.hold_open) snap(k.hold_pre);
     int n = 0;
     for (uint32_t i = 0; i < kEnvWords; i++)
         if (k.before[i] != k.after[i] && m[i] == k.after[i]) {
@@ -86,6 +102,41 @@ void kankyo_draw(uint32_t proc, bool begin) {
     if (trace > 0 && n) {
         trace--;
         LOG("[interp] step %llu: environment draw state put back (%d words) before a pass without logic", (unsigned long long)step, n);
+    }
+    if (hold_end_on() && !k.hold_open) {
+        snap(k.hold_start);
+        k.hold_open = true;
+    }
+}
+
+// start of every pass (interp.cpp hook_0203593C, after fx_pass_start): the words the last pass
+// without logic changed from its KANKYO draw on are put back to their values from before that draw (its put-back above
+// undone too), so the next pass starts from the logic pass's draw end. The put-back before the draw alone made the hold
+// pass's draw start where the logic pass's did, but its own writes stayed: harmless with the same inputs (plain frame
+// interpolation recomputes the same values), not in true 60, where the frame's earlier steps run the frame's first step
+// (the frame-level work: the play scene's execute, the room change) before the tick30 step: their draw read the new room and
+// SetBaseLight / setLight switched the room light there, so the tick30 step's draw started from the switched state and
+// every room-entry light transition began one 30 Hz frame early in B (light test runs: dKy_setLight's light
+// position first moves at scenario frame 230 in A, 229 in B, with every process unconverted). Now the environment's
+// draw-time state advances on logic passes' draws only, as the comment above says; the hold pass still draws with
+// what its draw computed.
+void kankyo_pass_start() {
+    KankyoKeep& k = g_ky;
+    if (!k.hold_open) return;
+    k.hold_open = false;
+    if (!enabled() || !keep_on() || !hold_end_on()) return;
+    uint32_t* m = (uint32_t*)ppc_ptr(kEnvLight);
+    int n = 0;
+    for (uint32_t i = 0; i < kEnvWords; i++)
+        if (m[i] != k.hold_start[i] || k.hold_start[i] != k.hold_pre[i]) {
+            if (m[i] != k.hold_pre[i]) n++;
+            m[i] = k.hold_pre[i];
+        }
+    static int trace = getenv("WWHD_INTERP_KANKYO_TRACE") ? atoi(getenv("WWHD_INTERP_KANKYO_TRACE")) : 0;
+    if (trace > 0 && n) {
+        trace--;
+        LOG("[interp] step %llu: environment draw state of the pass without logic put back (%d words)",
+            (unsigned long long)logic_steps(), n);
     }
 }
 }  // namespace interp

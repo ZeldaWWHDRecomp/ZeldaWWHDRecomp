@@ -352,6 +352,23 @@ int main() {
         for (int c = 0; c < g::kGenerated; c++) assert(!g::rate_of(c).generated);
         assert(g::rate_choice(0, 60, true) == g::kGenerated && g::rate_choice(0, 60, false) == 0);
         assert(g::rate_choice(1, 60, true) == 2 && g::rate_of(g::kRateCount).mode == 0 && !g::rate_of(g::kRateCount).generated);
+        // true logic (decomp build only): appended after the generated choice, so the others keep their numbers; listed
+        // only with true_logic; steps 2 / 4 show as them whatever frame interpolation is at
+        assert(g::kTrue60 == 6 && g::kTrue120 == 7 && g::kRateCountTrue == 8);
+        assert(g::steps_of(g::kTrue60) == 2 && g::steps_of(g::kTrue120) == 4);
+        for (int c = 0; c < g::kRateCount; c++) assert(g::steps_of(c) == 1);
+        assert(g::true_choice(2) == g::kTrue60 && g::true_choice(4) == g::kTrue120 && g::true_choice(1) == -1);
+        assert(g::rate_choice_true(1, 60, false, 2) == g::kTrue60 && g::rate_choice_true(1, 120, false, 4) == g::kTrue120);
+        assert(g::rate_choice_true(1, 60, false, 1) == 2 && g::rate_choice_true(0, 60, true, 1) == g::kGenerated);
+        {
+            int list[g::kRateCountTrue];
+            assert(g::rate_list(list, true, false) == 6);  // (the normal build's lists)
+            for (int i = 0; i < 6; i++) assert(list[i] == i);
+            assert(g::rate_list(list, false, false) == 5);
+            assert(g::rate_list(list, false, true) == 7 && list[4] == 4 && list[5] == g::kTrue60 && list[6] == g::kTrue120);
+            assert(g::rate_index(list, 7, g::kTrue120) == 6 && g::rate_index(list, 7, g::kGenerated) == 0);
+            assert(g::rate_list(list, true, true) == 8 && list[5] == g::kGenerated && g::rate_index(list, 8, g::kTrue60) == 6);
+        }
         assert(g::dyn_choice(0) == 0 && g::dyn_choice(0.75f) == 1 && g::dyn_choice(0.5f) == 2 && g::dyn_choice(0.55f) == 2);
         // its words are translated (French, German, Italian, Spanish), as the other tabs'
         const char* words[] = {"Graphics", "Internal resolution", "Frame rate", "Dynamic resolution", "Bloom", "Edge smoothing (FXAA)",

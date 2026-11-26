@@ -136,6 +136,7 @@ struct Warp {
     int room = 0, point = 0, angle = 0;
     bool at_position = false;
     float pos[3] = {};
+    int layer = -1;  // test aid only (WWHD_TEST_WARP_AT's optional layer field): that layer of the stage; -1 as above
 };
 void request_warp(const Warp& w, std::function<void(bool ok, const std::string& why)> done = nullptr);
 // any thread, cheap (memory reads only): why Link is not under the player's control now, or ""
@@ -167,6 +168,11 @@ uint64_t last_load_frame();
 uint64_t seeded_arrival_frame();
 uint64_t seeded_arrival_step();
 uint32_t seeded_arrival_counter();
+// test aid WWHD_TEST_LOAD_QUIET=mask (with WWHD_TEST_SYNC_LOADS, WWHD_TEST_LOAD_SEED_HOLD and WWHD_TEST_FIXED_SEED;
+// stage-load hold): a followed stage change (portable load, test warp, the game's own) is in a phase of its load
+// gate named by the mask (1: the old stage fading out / torn down, until mTimer stops; 2: the loading frames, until the
+// arrival; 3: both): frame interpolation's in-between passes then skip the per-frame function (interp.cpp)
+bool test_load_quiet();
 uint64_t last_arrival_frame();  // TV frame a portable load arrived at (Link settled; 0: none)
 uint64_t last_load_step();
 uint32_t last_load_counter();  // g_Counter.mTimer right after the last load   // logic step (interp::logic_steps) of the last completed load  // TV frame of the last completed load (0: none); test scenarios start from it

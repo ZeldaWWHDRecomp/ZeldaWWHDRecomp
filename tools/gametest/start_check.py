@@ -34,6 +34,21 @@ def start(run):
     return (int(m.group(2)), m.group(1).strip()) if m else None
 
 
+_ENTRY = re.compile(r"portable state: first frame in the new stage: .*?mCounter0 \d+ \(was (\d+), mTimer (\d+)\)")
+
+
+def entry(run):
+    """(old mCounter0, mTimer) at the run's first frame in the new stage, or None. The old counter tells how many
+    frames the scene change took: two runs with the same load start (start()) can still differ here when the
+    loading frames end on wall-clock threads (2026-11-20 n1kg260: was 3247 against the references' 3245; Link's
+    motion then lags the references by two more steps than before the load and the single-offset compare fails)."""
+    log = os.path.join(run, "log")
+    if not os.path.exists(log):
+        return None
+    m = _ENTRY.search(open(log, errors="replace").read())
+    return (int(m.group(1)), int(m.group(2))) if m else None
+
+
 _INTERP_ON = re.compile(r"\[interp\] frame interpolation on.*|\[test\] t=[\d.]+ s: 60 fps mode [12]")
 
 

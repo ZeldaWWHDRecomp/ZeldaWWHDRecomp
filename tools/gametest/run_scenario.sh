@@ -30,7 +30,9 @@ for attempt in $(seq 1 ${BOOT_TRIES:-3}); do
     WWHD_PROC_DIGEST=${DIGEST-digest.txt} WWHD_PROC_DIGEST_SKIP=$skip WWHD_INTERP=0 "$@" \
     $exe --game $game --save save > log 2>&1 &
   pid=$!
-  trap 'kill -9 $pid 2>/dev/null' EXIT INT TERM HUP
+  # (a signal kills the game AND ends the script: the boot-retry loop must not relaunch a stopped run)
+  trap 'kill -9 $pid 2>/dev/null' EXIT
+  trap 'kill -9 $pid 2>/dev/null; exit 143' INT TERM HUP
   # CPU time of the game process (user+sys, seconds)
   cpu_now() { ps -o time= -p $pid 2>/dev/null | awk -F'[:.]' '{ if (NF==3) print $1*60+$2+$3/100; else print $1*3600+$2*60+$3+$4/100 }'; }
   t0=$EPOCHREALTIME cpu0= t1=

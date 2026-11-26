@@ -1297,8 +1297,10 @@ struct Scenario {
 };
 }  // namespace
 }  // namespace input
-namespace interp { void set_mode(int m); uint64_t logic_steps(); }
+namespace interp { void set_mode(int m); uint64_t logic_steps(); double input_step_offset(); }
 namespace test_aids { void set_origin_step(uint64_t s); void tick(double t, bool ended); }
+namespace t60 { void test_scenario_time(double t); }
+namespace ss { void test_origin_reseed(); uint64_t test_scenario_paused(uint64_t now); }
 namespace input {
 static void apply_scenario(PadState& s) {
     static Scenario sc;
@@ -1327,6 +1329,7 @@ static void apply_scenario(PadState& s) {
             LOG("[test] origin at logic step %llu (load + WWHD_TEST_ORIGIN_LOAD), logic step %llu", (unsigned long long)ol_step,
                 (unsigned long long)ol_step);
             test_aids::set_origin_step(ol_step);
+            ss::test_origin_reseed();  // (WWHD_TEST_ORIGIN_RESEED)
             return ol_step;
         }
         LOG("[test] origin at guest time %.4f s, logic step %llu", (double)timebase::now() / timebase::kTicksPerSec,
@@ -1334,7 +1337,13 @@ static void apply_scenario(PadState& s) {
         test_aids::set_origin_step(interp::logic_steps());
         return interp::logic_steps();
     }();
-    double t = (double)(interp::logic_steps() - s0) / 30.0;
+    // (true 60: the frame's input read on its first step, an in-between pass, sees the same scripted time as the 30 Hz
+    // game's read of that frame on its logic pass: the step clock, not record_step, which runs one frame ahead there)
+    // (minus a test warp's loading frames, WWHD_TEST_LOAD_SEED_HOLD only: savestate.cpp test_scenario_paused)
+    double t = (double)(interp::logic_steps() - s0 - ss::test_scenario_paused(interp::logic_steps())) / 30.0;
+#if WWHD_DECOMP
+    t60::test_scenario_time(t);  // (WWHD_T60_TEST_CONVERT_FROM)
+#endif
     static std::atomic<bool> mode_set{false}, ended{false};
     static std::atomic<int> dbg{0};
     if (getenv("WWHD_TEST_DEBUG") && dbg++ % 30 == 0) LOG("[test] t=%.3f frame %llu", t, (unsigned long long)render::frame_count());
@@ -1379,8 +1388,29 @@ static void apply_scenario(PadState& s) {
         }
     for (auto& p : sc.rsticks)
         if (t >= p.from && t < p.to) { s.rx = p.x; s.ry = p.y; }
-    for (auto& p : sc.presses)
-        if (t >= p.from && t < p.to) s.buttons |= p.bits;
+    // test aid WWHD_T60_TEST_INPUT_STEP=d (true 60 fps input; d in 30 Hz frames, 0 < d < 1):
+    // the scripted presses at step resolution. Each press window starts and ends d frames before the frame boundary at
+    // which it lands at 30 Hz, and a read sees the time of its own step (the frame's time + k / N for step k of N). At
+    // N = 1 every read is on a frame boundary, so the presses land exactly as without the aid; at N > 1 a press reaches
+    // the step it falls in (d = 0.5 at N 2: the step before the boundary).
+    static const double step_early = [] {
+        const char* e = getenv("WWHD_T60_TEST_INPUT_STEP");
+        double d = e ? atof(e) : 0.0;
+        if (d > 0.0 && d < 1.0) {
+            LOG("[test] WWHD_T60_TEST_INPUT_STEP: presses %.3f frame(s) early at step resolution", d);
+            return d / 30.0;
+        }
+        return 0.0;
+    }();
+    if (step_early > 0) {
+        auto grid = [](double x) { return std::ceil(x * 30.0 - 1e-6) / 30.0; };  // (the frame boundary it lands on)
+        const double ts = t + interp::input_step_offset() / 30.0 + 1e-9;
+        for (auto& p : sc.presses)
+            if (ts >= grid(p.from) - step_early && ts < grid(p.to) - step_early) s.buttons |= p.bits;
+    } else {
+        for (auto& p : sc.presses)
+            if (t >= p.from && t < p.to) s.buttons |= p.bits;
+    }
     // debug: WWHD_TEST_INPUT_LOG=<file> writes every change of the input the game reads, at scenario
     // time, as "t buttons lx ly rx ry": played live, it becomes a WWHD_TEST_* scenario that repeats it
     static FILE* input_log = [] {

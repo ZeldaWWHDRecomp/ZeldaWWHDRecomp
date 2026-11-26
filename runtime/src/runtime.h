@@ -119,6 +119,9 @@ void park_sleep_until(std::chrono::steady_clock::time_point t,
 // (1: any such thread, 2: only at the place a loaded snapshot has them)
 bool quiesce(int timeout_ms, std::string& busy, int entry_mode = 0, int entry_after_ms = 0);
 void thaw();
+// test aid WWHD_TEST_SYNC_LOADS (threads.cpp): the main thread, before each full logic step, waits until the game's
+// loader threads are idle (requests of one frame complete before the next); nothing without the switch
+void sync_loads_wait(uint64_t step);
 }  // namespace threads
 
 // ---- time ----

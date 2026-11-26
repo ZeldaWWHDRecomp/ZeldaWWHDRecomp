@@ -15,6 +15,8 @@
 
 // ax.cpp's sound trace reads the host clock; Windows' linker keeps that code (no section GC there)
 namespace timebase { uint64_t now() { return 0; } }
+// ax.cpp's test step clock (WWHD_TEST_STEP_CLOCK, fixed_seed.cpp): off, the AX frames run on the host clock
+namespace fixed_seed { bool step_clock() { return false; } }
 namespace hostui {
 bool get(const char *, std::string &value) {
     value = "surround";

@@ -106,6 +106,9 @@ namespace gfxvk { bool buffer_cache_enabled(); unsigned submission_pool_slots();
 #include "../mods/mod_archive.h"
 #endif
 #include "../interp.h"
+#if WWHD_DECOMP
+#include "../t60/t60.h"  // (Frame rate: true logic)
+#endif
 #include "../interp_pacing.h"
 #include "../runtime.h"
 #include "../savestate.h"
@@ -147,6 +150,28 @@ std::atomic<bool> g_open{false};
 std::atomic<int> g_perf{int(PerfOverlay::Off)};  // PerfOverlay
 std::atomic<bool> g_stereo_pointer_visible{false};
 PerfAverage g_average;
+#if WWHD_DECOMP
+// the decomp build's true logic: logic steps a second with every true-60 step counted (t60::steps_run; the logic
+// steps/s of g_average count 30 Hz frames: 30 while true 60 runs), over 2-second windows (sampled with g_average)
+struct T60Rate {
+    double t0 = 0, rate = 0;
+    uint64_t s0 = 0;
+    void sample(double t) {
+        const uint64_t s = t60::steps_run();
+        if (t0 == 0 || t < t0) t0 = t, s0 = s;
+        else if (t - t0 >= 2.0) rate = double(s - s0) / (t - t0), t0 = t, s0 = s;
+    }
+    // "True logic: N 2 chosen, 59.9 steps/s" (empty while N 1 is chosen and no true-60 step ran)
+    std::string line() const {
+        const int n = t60::requested_n();
+        if (n <= 1 && rate < 31) return {};
+        char b[96];
+        snprintf(b, sizeof b, "True logic: %d steps per frame chosen, %.1f logic steps/s", n, rate);
+        return b;
+    }
+};
+T60Rate g_t60_rate;
+#endif
 std::atomic<float> g_density{1.0f};
 std::atomic<float> g_android_dpi{160.0f};
 std::atomic<int> g_ui_size{0};
@@ -860,7 +885,11 @@ std::string performance_report() {
     char frame[180];
     snprintf(frame, sizeof frame, "Output FPS %.1f (average %.1f), render interval %.2f ms (worst %.2f), average logic steps/s %.1f\n",
              U.fps, g_average.fps, sum / 120.0f, worst, g_average.logic);
-    std::string report = std::string(frame) + perf::summary();
+    std::string report = std::string(frame);
+#if WWHD_DECOMP
+    if (const std::string t60line = g_t60_rate.line(); !t60line.empty()) report += t60line + "\n";
+#endif
+    report += perf::summary();
     report += render_objects::line() + "\n";  // live shaders/pipelines, memory mappings (render_objects.h)
     report += dynres::status() + "\n";
 #ifdef __ANDROID__
@@ -964,14 +993,23 @@ void tab_graphics() {
     }
     heading("Frame rate");
     int m = interp::mode(), f = interp::fps();
+#if WWHD_DECOMP
+    // the decomp build's true logic (t60/t60.h): its own choices below; every other choice returns to 30 logic steps
+    const int tn = t60::requested_n();
+    static constexpr auto logic30 = [] { interp::set_true_logic(1); };
+#else
+    constexpr int tn = 1;
+    static constexpr auto logic30 = [] {};
+#endif
     // 60 fps (generated, framegen.h): Vulkan only; one choice with the others (picking another clears it)
     const bool genShown = framegen::available(), gen = genShown && m == 0 && framegen::chosen(), genFixed = framegen::env_override();
-    if (radio("30 fps (original)", m == 0 && !gen)) post_changed([] { interp::set_mode(0); framegen::set_chosen(false); });
+    if (radio("30 fps (original)", m == 0 && !gen && tn <= 1)) post_changed([] { logic30(); interp::set_mode(0); framegen::set_chosen(false); });
     for (int r : {40, 60, 120, 240}) {
         ImGui::SameLine();
         char label[16];
         snprintf(label, sizeof label, "%d fps", r);
-        if (radio(label, m == 1 && f == r)) post_changed([r] { framegen::set_chosen(false); interp::set_fps(r); interp::set_mode(1); });
+        if (radio(label, m == 1 && f == r && tn <= 1))
+            post_changed([r] { logic30(); framegen::set_chosen(false); interp::set_fps(r); interp::set_mode(1); });
     }
     help("40, 60, 120 and 240 fps: frame interpolation. The game logic keeps its 30 steps a second, and the\n"
          "frames in between are drawn blended (1 in-between frame per step at 60 fps, 3 at 120 fps,\n"
@@ -979,7 +1017,8 @@ void tab_graphics() {
          "40 fps draws 4 frames for every 3 steps (1 in-between frame per 3 steps), for 40, 80 and\n"
          "120 Hz screens (a Steam Deck set to 40 Hz or 80 Hz, phones with a 120 Hz panel).");
     if (genShown) {
-        if (radio("60 fps (generated, experimental)", gen, !genFixed)) post_changed([] { interp::set_mode(0); framegen::set_chosen(true); });
+        if (radio("60 fps (generated, experimental)", gen && tn <= 1, !genFixed))
+            post_changed([] { logic30(); interp::set_mode(0); framegen::set_chosen(true); });
         help("The game runs at its own 30 fps, and every other frame is made on the graphics chip from the\n"
              "frame before it: the picture moves on by half the camera's last step (and objects by half of\n"
              "their own), while the HUD stays where it is. Costs much less than frame interpolation, so it\n"
@@ -987,6 +1026,16 @@ void tab_graphics() {
              "real frames. Not with fast forward or stereo 3D (the real 30 frames are shown then).");
         if (genFixed) note("Set by WWHD_FRAMEGEN for this start.");
     }
+#if WWHD_DECOMP
+    if (radio("60 fps (true logic)", tn == 2)) post_changed([] { interp::set_true_logic(2); });
+    ImGui::SameLine();
+    if (radio("120 fps (true logic, experimental)", tn == 4)) post_changed([] { interp::set_true_logic(4); });
+    help("True logic (this build only): the game itself runs 60 (or 120) steps a second instead of 30,\n"
+         "and every frame is drawn from its own step. Takes effect at once (with the next frame). Events,\n"
+         "messages, menus and stage changes still run at 30 steps. 120 needs a 120 Hz display and a fast\n"
+         "computer (experimental).");
+    if (t60::n_from_env()) note("Set by WWHD_T60_STEPS for this start (not saved).");
+#endif
     // the display's refresh rate, and what the chosen rate draws on it (interp::output_fps)
     if (const int hz = interp::display_hz(); hz > 0) {
         const int out = interp::output_fps();
@@ -3583,6 +3632,9 @@ void perf_window(bool menu_open) {
     if (ImGui::Begin("##perf", nullptr, fl)) {
         ImGui::Text("%.0f fps   Render interval %.1f ms (worst %.1f)", U.fps, sum / 120.0f, worst);
         ImGui::Text("Average %.1f fps   %.1f logic steps/s", g_average.fps, g_average.logic);
+#if WWHD_DECOMP
+        if (const std::string t60line = g_t60_rate.line(); !t60line.empty()) ImGui::TextUnformatted(t60line.c_str());
+#endif
         {
             // slow motion: frame interpolation without Keep game speed below its frame target
             // Shown from the second 2-second window in a row below 29 logic steps/s (the game's rate is
@@ -4270,6 +4322,9 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     g_last_frame = t;
     g_average.sample(t, gx2::flips_presented(), interp::executed_steps(), int(render::active()),
                      interp::mode(), interp::fps(), hostui::res_scale());
+#if WWHD_DECOMP
+    g_t60_rate.sample(t);
+#endif
     read_controller();
     // the game's text prompt shows unless the menu is open over it (the menu has the input then)
     const PerfOverlay perfMode = perf_mode();

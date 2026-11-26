@@ -16,31 +16,41 @@
 # load early in game time and then plays on from a different state: a fake divergence (2026-11-06: every one of 18
 # decomp runs whose load started at mTimer 3112/3111 failed; the normal build too under a heavier load). Only the
 # load on the step clock is not enough: the presses would still land early (seen: mTimer 3120 at logic step 3400).
+# The run is also refused (BADSTART) when its "first frame in the new stage" line shows another old mCounter0 than
+# the references' (the scene change took more or fewer frames: wall-clock loading threads; 2026-11-20 n1kg260: 2 frames
+# more -> 2832 / 3000; runs 1 frame off scored 2999). CLIFF_ENTRY_SLACK=n accepts n frames of difference (default 1).
 # Whatever the clock, the run is refused (verdict BADSTART, exit 3) unless the log's "portable state: loading the
 # new stage" line shows the start every normal-build run has: mTimer CLIFF_EXPECT_TIMER (3113) and the old stage's
 # cM_rnd seeds CLIFF_EXPECT_WERE ("4292 10047 23570": a fingerprint of everything before the load).
+# A refused run is host timing (see below): it is kept as OUT.badstartN and the check runs again, up to CLIFF_TRIES (3)
+# runs in all. The verdict's first line is the last run's; one line per refused run follows.
 set -u
 exe=${1:A} out=${2:A}; shift 2
 here=${0:A:h}; root=${here:h:h}
 iso=$out.iso
 slot=${CLIFF_SLOT:-4} expect=${CLIFF_EXPECT_TIMER:-3113} were=${CLIFF_EXPECT_WERE:-4292 10047 23570}
 case ${CLIFF_CLOCK:-step} in step) clock=1 ;; tv) clock=0 ;; *) echo "CLIFF_CLOCK: step or tv"; exit 2 ;; esac
+tries=${CLIFF_TRIES:-3}
+[[ $tries == <1-> ]] || { echo "CLIFF_TRIES: a number >= 1"; exit 2; }
 [ -e $out ] && { echo "$out exists"; exit 1; }
 for v in CLIFF_STATE CLIFF_SHADER CLIFF_REFS; do [ -n "${(P)v:-}" ] || { echo "$v not set"; exit 2; }; done
+for t in $(seq 2 $tries); do [ -e $out.badstart$((t - 1)) ] && { echo "$out.badstart$((t - 1)) exists"; exit 1; }; done
+# one run into $out and its verdict (stdout); exit status as the script's
+attempt() {
 rm -rf $iso; mkdir -p $iso/user
 cp $CLIFF_SHADER $iso/shader.bin && cp -R $CLIFF_STATE $iso/state || exit 2
 U="$HOME/Library/Application Support/WWHD"
 for f in controls.json display.plist ModManager; do [ -e "$U/$f" ] && cp -R "$U/$f" $iso/user/; done
-cd $root
+(cd $root &&
 DIGEST= ORIGIN=3460 SHADER_CACHE=$iso/shader.bin VK_SHADER_CACHE=$iso/vk.bin VK_PIPELINE_CACHE_DIR=$iso/vkp \
   timeout 900 tools/gametest/run_scenario.sh $exe ${CLIFF_GAME:-game} ${CLIFF_SAVE:-../gametest/saves/savage} $out 16 \
   WWHD_USER_DIR=$iso/user WWHD_STATE_DIR=$iso/state WWHD_STATE_LOAD_AT=3400:$slot WWHD_TEST_FIXED_SEED=1 WWHD_TEST_STEP_CLOCK=$clock \
-  WWHD_DUMP_FRAMES=999999 WWHD_INTERP=0 WWHD_INTERP_AT_STEP=0 "$@" > /dev/null 2>&1
+  WWHD_DUMP_FRAMES=999999 WWHD_INTERP=0 WWHD_INTERP_AT_STEP=0 "$@" > /dev/null 2>&1)
 rm -rf $iso
 python3 -I - $here $out $expect "$were" ${=CLIFF_REFS} <<'PY'
-import re, sys
+import os, re, sys
 sys.path.insert(0, sys.argv[1])
-from start_check import start as run_start, interp_on, interp_message
+from start_check import start as run_start, entry as run_entry, interp_on, interp_message
 out, expect, were, refs = sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5:]
 # the trace up to the scenario's end step (origin + 16 s * 30): the harness stops the game when it sees test_done, and
 # how many steps it still runs before that (up to ~35 under host load) is not the game's doing
@@ -48,7 +58,8 @@ def load(r):
     o = re.search(r"\[test\] origin at .*?logic step (\d+)", open(r + "/log", errors="replace").read())
     end = int(o.group(1)) + 16 * 30 if o else 1 << 62
     rows = [l.split() for l in open(r + "/trace.txt")]
-    return [x[3:] for x in rows if len(x) > 3 and x[1].isdigit() and int(x[1]) <= end][-3000:]
+    # (columns 3-17: the trace's original 18 columns; later appended columns, e.g. the attention targets, are not compared)
+    return [x[3:18] for x in rows if len(x) > 3 and x[1].isdigit() and int(x[1]) <= end][-3000:]
 start, w = run_start(out) or (None, None)  # (start_check.py: the same check for any A/B pair)
 try:
     b = load(out)
@@ -62,6 +73,13 @@ for ref in refs:
 line = interp_on(out)
 if line:
     print("cliff trace: %d of 3000 lines as the normal build -> %s" % (best, interp_message(out, line))); sys.exit(3)
+# the stage entry: the new stage's first frame after as many loading frames as in the references (old mCounter0)
+ent = run_entry(out); ref_ent = sorted(set(e for e in (run_entry(r) for r in refs) if e))
+slack = int(os.environ.get("CLIFF_ENTRY_SLACK", "1"))  # frames of difference still accepted (default 1)
+if start == expect and w == were and ent and ref_ent and all(abs(ent[0] - e[0]) > slack or ent[1] != e[1] for e in ref_ent):
+    print("cliff trace: %d of 3000 lines as the normal build -> BADSTART (the new stage's first frame after mCounter0 %d, "
+          "mTimer %d; the references: %s: the scene change took another number of frames, not a valid comparison)"
+          % (best, ent[0], ent[1], ", ".join("mCounter0 %d mTimer %d" % e for e in ref_ent))); sys.exit(3)
 if start != expect or w != were:
     print("cliff trace: %d of 3000 lines as the normal build -> BADSTART (the load started at mTimer %s, old-stage seeds "
           "%s; expected %d, %s: not a valid comparison)" % (best, start, w, expect, were)); sys.exit(3)
@@ -70,4 +88,22 @@ sys.exit(0 if best >= 2990 else 1)
 PY
 rc=$?
 [ -f $out/log ] && head -c 300000 $out/log > $out/log.cap && mv $out/log.cap $out/log
+return $rc
+}
+# BADSTART is host timing, not the build (2026-11-18): the loading frames of the save's stage entry after the title
+# screen end when threads on the wall clock are done (the play scene waits for the audio system's first dynamic wave,
+# see README), so that gap takes 219 logic steps in most runs and 220 (load at mTimer 3112) or 221 (3111) in some, for
+# the same binary (n1-npc-776f6f2f3: BADSTART, then PASS; the normal build's references n1/n2 took 219). The rest of the run is then on another path
+# (it differs from the gameplay entry's 8th step on, before any later press), so the start guard refuses it. A refused
+# run is kept as OUT.badstartN and the check runs again, up to CLIFF_TRIES (3) runs in all. The guard itself is
+# unchanged: only a run with the normal build's start counts.
+notes=()
+for t in $(seq 1 $tries); do
+  verdict=$(attempt "$@"); rc=$?
+  [[ $rc == 3 && $verdict == *BADSTART* && $t -lt $tries ]] || break
+  mv $out $out.badstart$t
+  notes+=("run $t of $tries: ${verdict#*-> } (kept in ${out:t}.badstart$t; ran again)")
+done
+print -r -- "$verdict"
+for n in $notes; do print -r -- "$n"; done
 exit $rc
