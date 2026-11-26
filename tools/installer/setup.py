@@ -2392,10 +2392,11 @@ def write_guest_build_config(data_dir, tc):
     return pending
 
 
-def game_icon_png(data_dir):
-    """The game's own icon (game/meta/iconTex.tga, uncompressed 32-bit) as PNG bytes, or None."""
+def game_icon_png(data_dir, game_dir=None):
+    """The game's own icon (meta/iconTex.tga of game_dir, by default the data folder's game, uncompressed
+    32-bit) as PNG bytes, or None."""
     try:
-        with open(os.path.join(data_dir, "game", "meta", "iconTex.tga"), "rb") as f:
+        with open(os.path.join(game_dir or os.path.join(data_dir, "game"), "meta", "iconTex.tga"), "rb") as f:
             d = f.read()
     except OSError:
         return None
@@ -2418,9 +2419,10 @@ def game_icon_png(data_dir):
             + chunk(b"IDAT", zlib.compress(b"".join(rows), 9)) + chunk(b"IEND", b""))
 
 
-def write_game_icon(data_dir, ico):
-    """wwhd.ico (a PNG-compressed icon) or wwhd.png in the data folder, from the game's own icon."""
-    png = game_icon_png(data_dir)
+def write_game_icon(data_dir, ico, game_dir=None):
+    """wwhd.ico (a PNG-compressed icon) or wwhd.png in the data folder, from the game's own icon (None when the
+    game is not there yet)."""
+    png = game_icon_png(data_dir, game_dir)
     if not png:
         return None
     path = os.path.join(data_dir, "wwhd.ico" if ico else "wwhd.png")
@@ -2596,34 +2598,112 @@ def launch(state, data_dir, decomp=None, game_args=None):
 LAUNCHER = {"darwin": "Wind Waker HD.app", "win32": "Wind Waker HD.exe"}.get(sys.platform, "wind-waker-hd")
 
 
-def create_shortcut():
-    """Optional (portable release): a shortcut to the release folder's launcher. Returns its path."""
+# the macOS shortcut with the game's icon: a small app of its own in ~/Applications that starts the release's app
+# (the release's app itself stays as it is: changing it would break its seal). This line marks it as setup's.
+MAC_SHORTCUT_MARK = "# the Wind Waker HD portable release's shortcut (written by its setup)"
+MAC_SHORTCUT_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>%s</string>
+  <key>CFBundleDisplayName</key><string>%s</string>
+  <key>CFBundleIdentifier</key><string>io.github.zeldawwhdrecomp.wwhd.shortcut</string>
+  <key>CFBundleExecutable</key><string>launch</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>LSMinimumSystemVersion</key><string>14.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSMicrophoneUsageDescription</key><string>Only when you turn on a code mod's singing option: the sound is analysed for its pitch while you play and never stored or sent.</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.games</string>
+</dict></plist>
+"""
+
+
+def own_mac_shortcut(link):
+    """True when link is the app create_shortcut wrote (not the installed app of mac_app, not the player's)."""
+    try:
+        with open(os.path.join(link, "Contents", "MacOS", "launch"), encoding="utf-8") as f:
+            return MAC_SHORTCUT_MARK in f.read()
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def mac_shortcut_app(link, target, png):
+    """link: an app with the game's icon (png) whose launcher starts the release's app (target)."""
+    tmp = link + ".tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    macos = os.path.join(tmp, "Contents", "MacOS")
+    os.makedirs(macos)
+    os.makedirs(os.path.join(tmp, "Contents", "Resources"))
+    exe = os.path.join(target, "Contents", "MacOS", "wind-waker-hd")
+    launcher = os.path.join(macos, "launch")
+    with open(launcher, "w") as f:
+        f.write('#!/bin/sh\n%s\nexec %s "$@"\n' % (MAC_SHORTCUT_MARK, shlex.quote(exe)))
+    os.chmod(launcher, 0o755)
+    with open(os.path.join(tmp, "Contents", "Resources", "AppIcon.icns"), "wb") as f:
+        f.write(mac_icns(png))
+    with open(os.path.join(tmp, "Contents", "Info.plist"), "w") as f:
+        f.write(MAC_SHORTCUT_PLIST % (APP_NAME, APP_NAME))
+    subprocess.run(["codesign", "--force", "--deep", "-s", "-", tmp], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    replace_dir(tmp, link)
+
+
+def create_shortcut(data_dir=None, game_dir=None):
+    """Optional (portable release): a shortcut to the release folder's launcher. Returns its path. It has the
+    game's own icon (issue #660) once the game is set up in data_dir (game_dir: where its files are); before
+    that, none (setup's update and repair refresh a shortcut it made, refresh_shortcut)."""
     target = os.path.join(PKG, LAUNCHER)
+    data_dir = data_dir or default_data_dir()
     if IS_MAC:
         apps = os.path.expanduser("~/Applications")
         os.makedirs(apps, exist_ok=True)
         link = os.path.join(apps, APP_NAME + ".app")
-        if os.path.islink(link):
-            os.remove(link)
-        if os.path.exists(link):
+        if os.path.exists(link) and not os.path.islink(link) and not own_mac_shortcut(link):
             raise SetupError("%s already exists" % link)
-        os.symlink(target, link)
+        png = game_icon_png(data_dir, game_dir)
+        if png:
+            if os.path.islink(link):
+                os.remove(link)
+            mac_shortcut_app(link, target, png)
+        else:  # (no icon yet: a link to the release's app, as before)
+            if os.path.islink(link):
+                os.remove(link)
+            elif os.path.exists(link):
+                shutil.rmtree(link)
+            os.symlink(target, link)
     elif IS_LINUX:
         apps = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "applications")
         os.makedirs(apps, exist_ok=True)
         link = os.path.join(apps, "wwhd.desktop")
+        icon = write_game_icon(data_dir, ico=False, game_dir=game_dir) if os.path.isdir(data_dir) else None
         with open(link, "w") as f:
             f.write("[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nPath=%s\nTerminal=false\nCategories=Game;\n"
-                    "Actions=setup;\n\n[Desktop Action setup]\nName=Setup (repair, update, change game)\n"
-                    "Exec=%s --setup\n" % (APP_NAME, desktop_exec(target), desktop_string(PKG), desktop_exec(target)))
+                    % (APP_NAME, desktop_exec(target), desktop_string(PKG)))
+            if icon:
+                f.write("Icon=%s\n" % desktop_string(icon))
+            f.write("Actions=setup;\n\n[Desktop Action setup]\nName=Setup (repair, update, change game)\n"
+                    "Exec=%s --setup\n" % desktop_exec(target))
     else:
         link = os.path.join(os.environ.get("APPDATA", ""), "Microsoft", "Windows", "Start Menu", "Programs", APP_NAME + ".lnk")
+        icon = write_game_icon(data_dir, ico=True, game_dir=game_dir) if os.path.isdir(data_dir) else None
         try:
-            win_shortcut(link, target, workdir=PKG)
+            win_shortcut(link, target, workdir=PKG, icon=icon or "")
         except (OSError, AttributeError, ValueError) as e:
             LOG.write("shortcut not created: %s" % e)
     say("  Shortcut: %s" % link)
     return link
+
+
+def refresh_shortcut(old_state, data_dir, game_dir):
+    """An update or repair of a portable release writes the shortcut setup made for it again (now with the game's
+    icon, issue #660). Returns its path, or None when there is none (or it is gone). Not fatal."""
+    link = old_state.get("shortcut")
+    if not link or not os.path.lexists(link):
+        return None
+    try:
+        return create_shortcut(data_dir, game_dir)
+    except (SetupError, OSError) as e:
+        LOG.write("shortcut not refreshed: %s" % e)
+        return link
 
 
 def toolchain_dir(data_dir):
@@ -3366,7 +3446,12 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
     if PORTABLE:
         write_portable_marker(exe_dir, data_dir)
         if args.shortcuts and kind != "gen":
-            state["shortcut"] = create_shortcut()
+            state["shortcut"] = create_shortcut(data_dir, ctx.game_dir)
+        elif old_state.get("shortcut") and not update_from:
+            # (an earlier release's shortcut stays with that release)
+            refreshed = refresh_shortcut(old_state, data_dir, ctx.game_dir) if kind != "gen" else old_state["shortcut"]
+            if refreshed:
+                state["shortcut"] = refreshed
     elif not args.no_shortcuts and kind != "gen":
         if IS_MAC:
             app = os.path.join(ctx.app_dir, APP_NAME + ".app")
@@ -4055,7 +4140,7 @@ def after_install(ctx, args, ui, state, source):
     if PORTABLE and ui.interactive and source[0] != "gen":
         if not args.shortcuts and ui.yesno("Add a shortcut to %s?" % {"darwin": "your Applications folder", "win32": "the Start menu"}
                                            .get(sys.platform, "your applications menu"), False):
-            state["shortcut"] = create_shortcut()
+            state["shortcut"] = create_shortcut(data_dir, ctx.game_dir)
             write_state(data_dir, state)
         tdir = toolchain_dir(data_dir)
         if os.path.isdir(tdir) and ui.yesno("Remove the downloaded compiler (%s)? Repair and guest mod builds need it; "
@@ -4456,7 +4541,12 @@ def gui_main(args):
 
     def do_shortcut(req):
         try:
-            reply(req, path=create_shortcut())
+            path = create_shortcut(ctx.data_dir, ctx.game_dir)
+            st = ctx.state()
+            if st:  # remembered: an update or repair writes it again (refresh_shortcut)
+                st["shortcut"] = path
+                write_state(ctx.data_dir, st)
+            reply(req, path=path)
         except (SetupError, OSError) as e:
             fail(req, "shortcut", str(e))
 

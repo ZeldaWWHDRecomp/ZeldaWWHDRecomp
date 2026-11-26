@@ -1667,6 +1667,163 @@ class MacAppIcon(unittest.TestCase):
                 self.assertEqual(os.path.isfile(os.path.join(app, "Contents", "Resources", "AppIcon.icns")), with_icon)
 
 
+class PortableShortcut(unittest.TestCase):
+    """Issue #660: the portable release's optional shortcut (create_shortcut) has the game's own icon once the
+    game is set up, on Windows (the .ico for SetIconLocation), Linux (Icon=) and macOS (an app with AppIcon)."""
+
+    def _dirs(self, d, with_game=True, game_dir=None):
+        pkg = os.path.join(d, "Wind Waker HD v0.6.0")
+        data = os.path.join(pkg, "data")
+        os.makedirs(data)
+        if with_game:  # game_dir: <folder>/game outside the data folder (a game folder used in place)
+            MacAppIcon._game(self, os.path.dirname(game_dir) if game_dir else data)
+        return pkg, data
+
+    def _linux(self, d, data, game_dir=None):
+        with mock.patch.multiple(setup, IS_MAC=False, IS_LINUX=True, IS_WIN=False, PKG=os.path.dirname(data)), \
+                mock.patch.dict(os.environ, {"XDG_DATA_HOME": os.path.join(d, "xdg")}), mock.patch.object(setup, "say"):
+            link = setup.create_shortcut(data, game_dir)
+        with open(link, encoding="utf-8") as f:
+            return link, f.read()
+
+    def test_linux_desktop_entry_has_the_game_icon(self):
+        with tempfile.TemporaryDirectory() as d:
+            pkg, data = self._dirs(d)
+            link, text = self._linux(d, data)
+            self.assertEqual(link, os.path.join(d, "xdg", "applications", "wwhd.desktop"))
+            icon = os.path.join(data, "wwhd.png")
+            target = os.path.join(pkg, setup.LAUNCHER)
+            self.assertEqual(text, "[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nPath=%s\nTerminal=false\n"
+                                   "Categories=Game;\nIcon=%s\nActions=setup;\n\n[Desktop Action setup]\n"
+                                   "Name=Setup (repair, update, change game)\nExec=%s --setup\n"
+                             % (setup.APP_NAME, setup.desktop_exec(target), pkg, icon, setup.desktop_exec(target)))
+            with open(icon, "rb") as f:
+                self.assertEqual(f.read(8), b"\x89PNG\r\n\x1a\n")
+
+    def test_linux_desktop_entry_without_the_game_has_no_icon(self):
+        with tempfile.TemporaryDirectory() as d:
+            _pkg, data = self._dirs(d, with_game=False)
+            _link, text = self._linux(d, data)
+            self.assertNotIn("Icon=", text)
+            self.assertIn("Actions=setup;\n\n[Desktop Action setup]\n", text)
+            self.assertFalse(os.path.exists(os.path.join(data, "wwhd.png")))
+        with tempfile.TemporaryDirectory() as d:  # no data folder at all yet: nothing is created for it
+            data = os.path.join(d, "pkg", "data")
+            os.makedirs(os.path.dirname(data))
+            _link, text = self._linux(d, data)
+            self.assertNotIn("Icon=", text)
+            self.assertFalse(os.path.exists(data))
+
+    def test_linux_icon_from_a_game_folder_outside_the_data_folder(self):
+        with tempfile.TemporaryDirectory() as d:
+            game = os.path.join(d, "my dump", "game")
+            _pkg, data = self._dirs(d, game_dir=game)
+            _link, text = self._linux(d, data, game)
+            self.assertIn("Icon=%s\n" % os.path.join(data, "wwhd.png"), text)
+
+    def _windows(self, d, data, game_dir=None):
+        calls = []
+        with mock.patch.multiple(setup, IS_MAC=False, IS_LINUX=False, IS_WIN=True, PKG=os.path.dirname(data)), \
+                mock.patch.dict(os.environ, {"APPDATA": os.path.join(d, "AppData")}), \
+                mock.patch.object(setup, "win_shortcut", side_effect=lambda *a, **kw: calls.append((a, kw))), \
+                mock.patch.object(setup, "say"):
+            link = setup.create_shortcut(data, game_dir)
+        self.assertEqual(link, os.path.join(d, "AppData", "Microsoft", "Windows", "Start Menu", "Programs",
+                                            setup.APP_NAME + ".lnk"))
+        self.assertEqual(len(calls), 1)
+        return calls[0]
+
+    def test_windows_shortcut_gets_the_game_icon(self):
+        import struct
+        with tempfile.TemporaryDirectory() as d:
+            pkg, data = self._dirs(d)
+            a, kw = self._windows(d, data)
+            icon = os.path.join(data, "wwhd.ico")
+            self.assertEqual(a[1], os.path.join(pkg, setup.LAUNCHER))
+            self.assertEqual(kw, {"workdir": pkg, "icon": icon})
+            with open(icon, "rb") as f:
+                ico = f.read()
+            self.assertEqual(struct.unpack("<HHH", ico[:6]), (0, 1, 1))  # an icon with one image
+            self.assertEqual(ico[22:30], b"\x89PNG\r\n\x1a\n")
+
+    def test_windows_shortcut_without_the_game_has_no_icon(self):
+        with tempfile.TemporaryDirectory() as d:
+            pkg, data = self._dirs(d, with_game=False)
+            _a, kw = self._windows(d, data)
+            self.assertEqual(kw, {"workdir": pkg, "icon": ""})
+
+    def test_windows_shortcut_failure_is_logged_not_fatal(self):
+        with tempfile.TemporaryDirectory() as d:
+            _pkg, data = self._dirs(d)
+            with mock.patch.multiple(setup, IS_MAC=False, IS_LINUX=False, IS_WIN=True, PKG=os.path.dirname(data)), \
+                    mock.patch.dict(os.environ, {"APPDATA": d}), mock.patch.object(setup, "say"), \
+                    mock.patch.object(setup, "win_shortcut", side_effect=OSError("no COM")), \
+                    mock.patch.object(setup.LOG, "write") as log:
+                setup.create_shortcut(data)
+            self.assertIn("no COM", log.call_args[0][0])
+
+    @unittest.skipUnless(sys.platform == "darwin", "codesign")
+    def test_mac_shortcut_app_has_the_game_icon(self):
+        import plistlib
+        import shutil
+        with tempfile.TemporaryDirectory() as d:
+            pkg, data = self._dirs(d)
+            home = os.path.join(d, "home")
+            link = os.path.join(home, "Applications", setup.APP_NAME + ".app")
+            target = os.path.join(pkg, setup.LAUNCHER)
+            with mock.patch.multiple(setup, IS_MAC=True, IS_LINUX=False, IS_WIN=False, PKG=pkg), \
+                    mock.patch.dict(os.environ, {"HOME": home}), mock.patch.object(setup, "say"):
+                # before the game is set up: a link to the release's app, as before
+                os.rename(os.path.join(data, "game"), os.path.join(d, "game.away"))
+                self.assertEqual(setup.create_shortcut(data), link)
+                self.assertEqual(os.readlink(link), target)
+                # then (setup's repair or update writes it again): an app of its own with the icon
+                os.rename(os.path.join(d, "game.away"), os.path.join(data, "game"))
+                setup.create_shortcut(data)
+                self.assertFalse(os.path.islink(link))
+                with open(os.path.join(link, "Contents", "Info.plist"), "rb") as f:
+                    info = plistlib.load(f)
+                self.assertEqual(info["CFBundleIconFile"], "AppIcon")
+                self.assertEqual(info["CFBundleExecutable"], "launch")
+                self.assertNotEqual(info["CFBundleIdentifier"], "io.github.zeldawwhdrecomp.wwhd")
+                self.assertIn("NSMicrophoneUsageDescription", info)
+                with open(os.path.join(link, "Contents", "Resources", "AppIcon.icns"), "rb") as f:
+                    self.assertEqual(f.read(4), b"icns")
+                self.assertTrue(setup.own_mac_shortcut(link))
+                setup.create_shortcut(data)  # its own app is replaced
+                self.assertTrue(setup.own_mac_shortcut(link))
+                # it starts the release's app's program with the arguments it is given
+                prog = os.path.join(target, "Contents", "MacOS", "wind-waker-hd")
+                os.makedirs(os.path.dirname(prog))
+                with open(prog, "w") as f:
+                    f.write('#!/bin/sh\necho "started $*"\n')
+                os.chmod(prog, 0o755)
+                out = subprocess.run([os.path.join(link, "Contents", "MacOS", "launch"), "--setup"],
+                                     capture_output=True, text=True, check=True).stdout
+                self.assertEqual(out, "started --setup\n")
+                # anything else there (the installed app of a per-user setup, the player's own) stays
+                shutil.rmtree(link)
+                os.makedirs(os.path.join(link, "Contents", "MacOS"))
+                with open(os.path.join(link, "Contents", "MacOS", "launch"), "w") as f:
+                    f.write("#!/bin/sh\n# written by the Wind Waker HD setup\n")
+                with self.assertRaises(setup.SetupError):
+                    setup.create_shortcut(data)
+                self.assertFalse(setup.own_mac_shortcut(link))
+
+    def test_refresh_only_a_shortcut_setup_made(self):
+        with tempfile.TemporaryDirectory() as d:
+            made = os.path.join(d, "wwhd.desktop")
+            with mock.patch.object(setup, "create_shortcut", return_value=made) as create:
+                self.assertIsNone(setup.refresh_shortcut({}, "data", "game"))
+                self.assertIsNone(setup.refresh_shortcut({"shortcut": made}, "data", "game"))  # removed since
+                create.assert_not_called()
+                open(made, "w").close()
+                self.assertEqual(setup.refresh_shortcut({"shortcut": made}, "data", "game"), made)
+                create.assert_called_once_with("data", "game")
+                create.side_effect = setup.SetupError("exists")
+                self.assertEqual(setup.refresh_shortcut({"shortcut": made}, "data", "game"), made)  # not fatal
+
+
 class Download(unittest.TestCase):
     """setup.download: retries, resume with range requests, the player's own copy (issue #113)."""
     DATA = bytes(range(256)) * 4096  # 1 MiB of fixture bytes
@@ -2611,6 +2768,21 @@ class DecompChoice(unittest.TestCase):
                 mock.patch.object(setup.decomp_setup, "build", side_effect=decomp_build):
             state = setup.install(ctx, ("installed", str(game)))
         return state, calls, data
+
+    def test_portable_repair_refreshes_its_shortcut(self):
+        # issue #660: a shortcut made before (without the game's icon) is written again, and stays remembered
+        with tempfile.TemporaryDirectory() as d:
+            made = os.path.join(d, "Wind Waker HD.lnk")
+            open(made, "w").close()
+            for before, refreshed in (({"shortcut": made}, True), ({}, False)):
+                with mock.patch.object(setup, "create_shortcut", return_value=made) as create:
+                    state, _calls, data = self.run_install(d, False, before=dict(before, version="test"))
+                if refreshed:
+                    create.assert_called_once_with(str(data), os.path.join(d, "game"))
+                    self.assertEqual(setup.read_state(str(data))["shortcut"], made)
+                else:
+                    create.assert_not_called()
+                    self.assertNotIn("shortcut", setup.read_state(str(data)))
 
     def test_desktop_entry_choice_is_saved_and_kept(self):
         # issue #625: an install outside a portable folder (an AppImage, a source build) on Linux
