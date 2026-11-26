@@ -3,6 +3,7 @@
 #include <limits>
 
 using mods::moon_jump_policy::steer;
+using mods::moon_jump_policy::leaves_alone;
 int main() {
     // Camera-relative forward/right and a released stick.
     auto forward = steer(0, 0, 1, 0, 1, 1);
@@ -28,4 +29,10 @@ int main() {
     }
     auto no_camera = steer(42, 1, 1, 0, 0, 1);
     assert(no_camera.x == 0 && no_camera.z == 0);
+    // #616: no moon jump in damage or demo procedures or while an event runs
+    for (uint32_t proc : {0x04u, 0x07u, 0x27u, 0x24u, 0x65u, 0x6Du, 0x93u, 0xA8u})
+        assert(!leaves_alone(proc, 0));
+    for (uint32_t proc : {0x66u, 0x6Bu, 0x6Cu, 0xA9u, 0xAAu, 0xB0u, 0xB1u, 0xB2u, 0xDAu})
+        assert(leaves_alone(proc, 0));
+    for (uint8_t mode : {1, 2, 0xFF}) assert(leaves_alone(0x27, mode) && leaves_alone(0x04, mode));
 }

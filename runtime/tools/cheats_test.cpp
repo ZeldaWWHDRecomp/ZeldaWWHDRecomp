@@ -227,6 +227,26 @@ int main() {
     mods::moon_jump_step(&cpu, link, true);
     assert(mods::moon_jump_move(link, x, z) && (x != 0 || z != 0));
     mods::moon_jump_step(&cpu, link, false);
+    // #616: held while Link falls into lava. The game's step puts him into DEMO_LAVA_DAMAGE (0xB0, speed.y 80) during
+    // a flight: the pass after it leaves him there, and so do the next steps (its step starts the void-out restart).
+    constexpr uint32_t event_run = 0x1046F0B0 + 0x5292;
+    mods::moon_jump_step(&cpu, link, true);
+    assert(ld32(link + 0x65F0) == 0x27 && mods::moon_jump_move(link, x, z));
+    st32(link + 0x65F0, 0xB0); stf32(link + 0x340, 80);
+    mods::moon_jump_step(&cpu, link, false);
+    assert(ldf32(link + 0x340) == 80 && !mods::moon_jump_move(link, x, z));
+    // damage and demo procedures, and any running event (talks, cutscenes, the restart itself)
+    for (auto [proc, event] : {std::pair<uint32_t, uint8_t>{0xB0, 0}, {0x66, 0}, {0x6B, 0}, {0xB2, 0}, {0x04, 1}, {0x27, 2}}) {
+        st32(link + 0x65F0, proc); st8(event_run, event); stf32(link + 0x340, 80);
+        mods::moon_jump_step(&cpu, link, true);
+        assert(ld32(link + 0x65F0) == proc && ldf32(link + 0x340) == 80 && !mods::moon_jump_move(link, x, z));
+        mods::moon_jump_step(&cpu, link, false);
+        assert(ldf32(link + 0x340) == 80);
+    }
+    st8(event_run, 0); st32(link + 0x65F0, 0x04);  // back in play: held, it flies again
+    mods::moon_jump_step(&cpu, link, true);
+    assert(ld32(link + 0x65F0) == 0x27 && ldf32(link + 0x340) == 25 && mods::moon_jump_move(link, x, z));
+    mods::moon_jump_step(&cpu, link, false);
     mods::set_infinite(mods::kMoonJump, false);
     mods::moon_jump_step(&cpu, 0x18000000, true);
     // Story grants are off by default, require consent, and fail closed without a complete backup.

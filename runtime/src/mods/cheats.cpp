@@ -69,6 +69,7 @@ uint32_t save_addr() {
 }
 
 const uint32_t kStageName = GD(0x1046F0B0) + 0x5134;  // current stage, as in savestate.cpp
+const uint32_t kEventRun = GD(0x1046F0B0) + 0x5292;   // dComIfGp_event_runCheck (dEvt_control_c mode), as in savestate.cpp
 // g_dComIfG_gameInfo.play (GameCube dComIfG_play_c + 0x1288 here; the USA and EU builds share the layout):
 //  - mItemRupeeCount (+0x48C0): rupees still to be added or taken; a shop does `-= price`. The HUD's
 //    rupee counter (dMeter_rupyMove) moves it into the save and counts the shown number along.
@@ -421,6 +422,15 @@ void moon_jump_step(Cpu* cpu, uint32_t link, bool before) {
         }
     } else if (flight.link != link) return;
     const bool held = (moon_buttons.load(std::memory_order_acquire) & input::kVirtMoonJump) != 0;
+    static const bool log = getenv("WWHD_MOON_LOG") != nullptr;  // each logic step: Link's procedure, the event mode
+    if (log && before)
+        LOG("[moon] step %llu: proc 0x%X event %u held %d flying %d pos %.1f %.1f %.1f speed.y %.1f",
+            (unsigned long long)step(), ld32(link + moon_proc), ld8(kEventRun), held, flight.flying,
+            ldf32(link + 0x314), ldf32(link + moon_pos_y), ldf32(link + 0x31C), ldf32(link + moon_speed_y));
+    if (moon_jump_policy::leaves_alone(ld32(link + moon_proc), ld8(kEventRun))) {
+        flight.flying = false;  // a damage, a demo or an event: the game's own steps run on (#616)
+        return;
+    }
     if (before && held) {
         if (ld32(link + moon_proc) != 0x27) {
             const Cpu saved = *cpu;
