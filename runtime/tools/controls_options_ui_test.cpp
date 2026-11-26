@@ -16,7 +16,7 @@
 
 using namespace overlay::controls_options;
 
-struct Case { const char* name; int w, h; bool phone; float scale; };
+struct Case { const char* name; int w, h; bool phone; float scale; bool decomp = false; };  // decomp: #604's note
 
 static void run(const Case& c, const char* dir) {
     // the layout in logical units (the overlay's DisplaySize); the picture is at that size too
@@ -43,6 +43,7 @@ static void run(const Case& c, const char* dir) {
 
     Values v;
     v.phone_vibration = c.phone ? 1 : -1;
+    v.invert_x_available = !c.decomp;  // Invert camera left/right greyed out with its note
     v.gyro_label = c.phone ? "Gyro: Device gyro (phone/tablet)..." : "Gyro: Controller gyro...";
     Layout layout;
     ImRect page;
@@ -97,7 +98,9 @@ static void run(const Case& c, const char* dir) {
     assert(hint >= std::min(font_size * 18, page.GetWidth() - 40) - 1);
     std::printf("%-26s logical %4.0fx%-4.0f page %4.0f wide: %d lines of options, hint %3.0f px wide\n", c.name,
                 io.DisplaySize.x, io.DisplaySize.y, page.GetWidth(), lines, hint);
-    if (!c.phone && io.DisplaySize.x >= 1240) {
+    // the decomp build's note makes the first line longer: it wraps once, still inside the page
+    if (!c.phone && c.decomp) assert(lines == 3);
+    if (!c.phone && !c.decomp && io.DisplaySize.x >= 1240) {
         // desktop as before: dead zone .. reset on one line; the stick ranges and the hint on the next
         for (Item i : {kItemInvert, kItemInvertX, kItemRumble, kItemGyro, kItemReset}) assert(layout.min[i].y < layout.max[kItemDeadzone].y);
         for (Item i : {kItemRangeRight, kItemHint}) assert(layout.min[i].y < layout.max[kItemRangeLeft].y);
@@ -125,6 +128,9 @@ int main(int argc, char** argv) {
         {"desktop-1920x1080", 1920, 1080, false, std::max(1.0f, 1080 / 820.0f)},
         {"desktop-2560x1440-hidpi", 2560, 1440, false, 2.0f},
         {"desktop-1280x720", 1280, 720, false, 1.0f},
+        // the decomp build without the points for Invert camera left/right: the longer, greyed-out label (issue #604)
+        {"phone-2340x1080-decomp", 2340, 1080, true, phone, true},
+        {"desktop-1920x1080-decomp", 1920, 1080, false, std::max(1.0f, 1080 / 820.0f), true},
     };
     for (const Case& c : cases) run(c, argc > 1 ? argv[1] : nullptr);
 }

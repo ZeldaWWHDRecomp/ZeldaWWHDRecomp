@@ -48,6 +48,9 @@ camera and the mouse and touch (swipe) camera. The baton keeps its directions an
 the camera swing behind Link keeps turning the way it does. It is saved as
 `invert_camera_x` in the controls file's `options`, written only when it is on,
 so files without it load with it off.
+The decomp build ([decomp-build.md](decomp-build.md)) shows it greyed out
+("Recompiled version only for now") until the decompiled camera carries the port
+points for those reads; the saved value is kept.
 
 While conducting, the **right stick supplies the notes**, including down. The
 **left stick controls the meter**: hold left or right to change the beat count.

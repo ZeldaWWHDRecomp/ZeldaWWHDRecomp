@@ -1119,6 +1119,19 @@ static NSTextField* label(NSString* s) {
     NSButton* invx = [NSButton checkboxWithTitle:@"Invert camera left/right" target:self action:@selector(invertChanged:)];
     invx.toolTip = @"The same for left and right: the camera, first-person views, item aiming and the mouse camera turn the other way. The Wind Waker baton and other right-stick controls are not inverted.";
     self.invertX = invx;
+    // the decomp build until its camera carries the points for the X reads (mods/camera.cpp): greyed out with a
+    // note under it, the saved value kept
+    NSTextField* invxNote = label(@"Recompiled version only for now");
+    invxNote.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+    invxNote.textColor = NSColor.secondaryLabelColor;
+    const bool invxOk = mods::invert_camera_x_available();
+    invx.enabled = invxOk;
+    invxNote.hidden = invxOk;
+    if (!invxOk) invx.toolTip = @"Recompiled version only for now: this decomp build's camera does not apply it yet. Your setting is kept.";
+    NSStackView* invxs = [NSStackView stackViewWithViews:@[invx, invxNote]];
+    invxs.orientation = NSUserInterfaceLayoutOrientationVertical;
+    invxs.alignment = NSLayoutAttributeLeading;
+    invxs.spacing = 1;
     // issue #40: stick range, one slider per stick (worn sticks usually wear one at a time)
     NSString* rangeTip = @"Default: 100% (no change). Scales the stick after the dead zone so a short stick reaches full deflection.";
     auto rangeSlider = [&](NSInteger tag) {
@@ -1207,12 +1220,12 @@ static NSTextField* label(NSString* s) {
     NSStackView* cameraOptions = [NSStackView stackViewWithViews:@[label(@"Camera speed:"),cameraSpeed,label(@"Mouse sensitivity:"),mouseSensitivity]];
     cameraOptions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     cameraOptions.spacing = 12;
-    for (NSView* v in @[bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, invx, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions]) {
+    for (NSView* v in @[bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, invxs, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:v];
     }
 
-    NSDictionary* v = NSDictionaryOfVariableBindings(bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, invx, lrl, lr, lrv, rrl, rr, rrv, rh,
+    NSDictionary* v = NSDictionaryOfVariableBindings(bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, invxs, lrl, lr, lrv, rrl, rr, rrv, rh,
                                                      ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions);
     auto C = [&](NSString* f, NSLayoutFormatOptions o = 0) {
         [root addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:f options:o metrics:nil views:v]];
@@ -1223,11 +1236,12 @@ static NSTextField* label(NSString* s) {
     C(@"H:|-0-[pv]-0-|");
     C(@"H:|-0-[sep]-0-|");
     C(@"H:|-16-[st]-16-|");
-    C(@"H:|-16-[reset]-(>=24)-[dzl]-8-[dz(160)]-6-[dzv(40)]-24-[inv]-16-[invx]-16-|", NSLayoutFormatAlignAllCenterY);
+    C(@"H:|-16-[reset]-(>=24)-[dzl]-8-[dz(160)]-6-[dzv(40)]-24-[inv]-16-[invxs]-16-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[rh]-(>=24)-[lrl]-8-[lr(160)]-6-[lrv(40)]-24-[rrl]-8-[rr(160)]-6-[rrv(40)]-16-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[ppl]-8-[pp]-24-[snl]-8-[sn]-24-[pc]-16-[ptc]-(>=16)-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[cameras]-(>=16)-|");
     C(@"H:|-16-[cameraOptions]-(>=16)-|");
+    C(@"V:[invxs]-(>=6)-[lr]");  // the note under Invert camera left/right keeps clear of the stick ranges
     C(@"V:|-12-[which]-6-[skip]-6-[fl]-6-[pv(>=400)]-0-[sep]-8-[st]-8-[reset]-10-[lr]-10-[pp]-10-[cameras]-8-[cameraOptions]-14-|");
     [w center];
     [self syncOptions];

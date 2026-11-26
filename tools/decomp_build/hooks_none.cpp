@@ -23,6 +23,8 @@ const uint32_t kFrameExact[] = {0u};
 const unsigned kNumFrameExact = 0;
 const uint32_t kGuestHooked[] = {0u};
 const unsigned kNumGuestHooked = 0;
+const uint32_t kUnwiredSites[] = {0u};
+const unsigned kNumUnwiredSites = 0;
 }  // namespace decomp
 
 #ifdef WWHD_DECOMP_FAST

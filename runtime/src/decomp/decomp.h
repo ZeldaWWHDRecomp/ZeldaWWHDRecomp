@@ -48,6 +48,10 @@ extern const unsigned kNumFrameExact;
 // callers take the guest call, so a guest mod's hook on them fires); decomp_mods.cpp checks the hooks against it
 extern const uint32_t kGuestHooked[];
 extern const unsigned kNumGuestHooked;
+// port_sites.py OPTION sites whose function runs decompiled without the port point (the decompilation does not carry
+// it yet): their option is off in this build (mods/camera.cpp invert_camera_x_available). Sorted.
+extern const uint32_t kUnwiredSites[];
+extern const unsigned kNumUnwiredSites;
 namespace mods {  // decomp_mods.cpp
 // at decomp::init, after the guest mods registered: true when a hooked function is missing from kGuestHooked (fast
 // mode; every game function then runs recompiled this start); WWHD_DECOMP_MOD_HOOKS_PROBE=FILE writes the hooks, exits

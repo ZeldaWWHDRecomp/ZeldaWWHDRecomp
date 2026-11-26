@@ -74,6 +74,9 @@
 #include <vector>
 
 #include "../camera_invert.h"
+#if WWHD_DECOMP
+#include "../decomp/decomp.h"  // kUnwiredSites
+#endif
 #include "camera_mouse.h"
 #include "camera_swipe.h"
 #include "steer.h"
@@ -97,6 +100,25 @@ void f_0240EBB0_orig(Cpu* c);  // daPy_Execute
 
 namespace test_aids { uint64_t origin_step(); }  // test_aids.cpp: the scenario origin (0 before it)
 namespace mods {
+// Invert camera left/right in this build (issue #604): the decomp build offers it only once the decompiled camera
+// carries the PORT_CAMERA_F points for the X reads (tools/decomp_build/port_sites.py OPTION sites); until then those
+// functions run decompiled without them, and the option is off (greyed out, the saved value kept).
+bool invert_camera_x_available() {
+#if WWHD_DECOMP
+    for (const auto& site : camera_invert::kSitesX) {
+        if (!camera_invert::inverts(site.use)) continue;
+        const uint32_t a = (uint32_t)strtoul(site.site, nullptr, 16);
+        for (unsigned k = 0; k < decomp::kNumUnwiredSites; ++k)
+            if (decomp::kUnwiredSites[k] == a) return false;
+    }
+#endif
+    return true;
+}
+// the saved setting, where this build can apply it (the mouse, swipe and stick paths all follow this)
+bool invert_camera_x_on() {
+    static const bool available = invert_camera_x_available();
+    return available && input_map::invert_camera_x();
+}
 namespace {
 constexpr uint32_t kCamSpeed = 0x154;   // dCamera_c: eased turning speed (manual camera)
 constexpr uint32_t kCamStickX = 0x170;  // dCamera_c: right stick x as the camera sees it (negated)
@@ -306,7 +328,7 @@ void filter_pad(input::PadState& s) {
             const float deg = steer_swing_degrees(player);
             if (deg != 0 && !player) {
                 // pre-signed: the inverted reads (Invert camera left/right) turn it back the way it goes
-                g_swipe_dx += deg * kSwingSign * camera_invert::mouse_yaw_sign(input_map::invert_camera_x());
+                g_swipe_dx += deg * kSwingSign * camera_invert::mouse_yaw_sign(invert_camera_x_on());
                 g_swipe_step = g_move_step = now;
             }
         }
@@ -322,7 +344,7 @@ void filter_pad(input::PadState& s) {
     if (look && g_look_step != now) {
         g_look_step = now;
         const float sens = mouse_sensitivity();
-        g_look_dx = g_dx * sens * camera_invert::mouse_yaw_sign(input_map::invert_camera_x());
+        g_look_dx = g_dx * sens * camera_invert::mouse_yaw_sign(invert_camera_x_on());
         g_look_dy = g_dy * sens * camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
         if (trace_on() && (g_look_dx != 0 || g_look_dy != 0)) trace("mouse look degrees right=%.3f down=%.3f", g_look_dx, g_look_dy);
     }
@@ -338,7 +360,7 @@ void filter_pad(input::PadState& s) {
             g_cannon_step = now;
             const float scale = mouse_sensitivity() / camera_swipe::kNominalSensitivity;
             g_cannon_x = camera_mouse::fallback_stick(g_dx * scale) *
-                camera_invert::mouse_yaw_sign(input_map::invert_camera_x());
+                camera_invert::mouse_yaw_sign(invert_camera_x_on());
             g_cannon_y = camera_mouse::fallback_stick(-g_dy * scale) *
                 camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
             g_dx = g_dy = 0;
@@ -433,7 +455,7 @@ static void manual_speed(Cpu* c) {
     if (mouse) {
         // mouse right = stick right = negative speed (the camera stores stick x negated); dx in degrees
         // (the other way with Invert camera left/right)
-        speed = camera_mouse::yaw_speed(dx * camera_invert::mouse_yaw_sign(input_map::invert_camera_x()), 1.0f,
+        speed = camera_mouse::yaw_speed(dx * camera_invert::mouse_yaw_sign(invert_camera_x_on()), 1.0f,
                                         c->f[25].ps0);
     } else if (direct_camera()) {
         float x = (float)ldf32(cam + kCamStickX);
@@ -528,7 +550,7 @@ extern "C" void site_02171B1C(Cpu* c) { camera_stick_y(c, "02171B1C"); }  // new
 
 // ---- Invert camera left/right (issue #604): right after the camera's CPad_GET_SUBSTICK_POS_X calls (f1 = stick x)
 static void camera_stick_x(Cpu* c, const char* site) {
-    if (!input_map::invert_camera_x()) return;
+    if (!invert_camera_x_on()) return;
     const float x = (float)c->f[1].ps0;
     c->f[1].ps0 = camera_invert::stick_x(x, true, camera_invert::Use::kCamera);
     c->f[1].ps1 = c->f[1].ps0;  // lfs result: both halves

@@ -14,6 +14,7 @@ struct Values {
     float deadzone = 0.15f;  // 0..0.9
     bool invert_camera_y = false;
     bool invert_camera_x = false;  // issue #604
+    bool invert_x_available = true;  // false: the decomp build without its points (greyed out, value kept)
     bool rumble = true, rumble_available = true;
     int phone_vibration = -1;  // phone_rumble::Mode 0..4; -1: no "Rumble on" choice (not Android)
     const char* gyro_label = "Gyro: off...";
@@ -57,11 +58,19 @@ inline unsigned draw(Values& v, Layout* layout = nullptr) {
     mark(kItemInvert);
     tip("Camera only, including first-person views and item aiming (bow, hookshot, telescope, Picto Box) and the "
         "mouse camera. The Wind Waker baton and other right-stick controls are not inverted.");
-    flow::next(flow::check("Invert camera left/right"), gap);
-    if (ImGui::Checkbox("Invert camera left/right", &v.invert_camera_x)) changed |= kInvert;
+    // the decomp build until its camera carries the points for the X reads (mods/camera.cpp
+    // invert_camera_x_available): greyed out with a note, the saved value kept
+    const char* invx = v.invert_x_available ? "Invert camera left/right"
+                                            : "Invert camera left/right (Recompiled version only for now)###invx";
+    flow::next(flow::check(v.invert_x_available ? invx : "Invert camera left/right (Recompiled version only for now)"), gap);
+    ImGui::BeginDisabled(!v.invert_x_available);
+    if (ImGui::Checkbox(invx, &v.invert_camera_x)) changed |= kInvert;
+    ImGui::EndDisabled();
     mark(kItemInvertX);
-    tip("The same for left and right: the camera, first-person views, item aiming and the mouse camera turn the "
-        "other way. The Wind Waker baton and other right-stick controls are not inverted.");
+    tip(v.invert_x_available
+            ? "The same for left and right: the camera, first-person views, item aiming and the mouse camera turn the "
+              "other way. The Wind Waker baton and other right-stick controls are not inverted."
+            : "Recompiled version only for now: this decomp build's camera does not apply it yet. Your setting is kept.");
     // issue #35: a way to keep the controller motors still (saved; WWHD_RUMBLE=0 starts with it off)
     flow::next(flow::check("Rumble"), gap);
     ImGui::BeginDisabled(!v.rumble_available);

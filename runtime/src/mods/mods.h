@@ -31,6 +31,8 @@ bool letterbox_while_targeting();
 void set_letterbox_while_targeting(bool on);
 void set_direct_camera(bool on);
 float camera_speed();  // direct camera: multiplier of the game's own top turning speed
+bool invert_camera_x_available();  // Invert camera left/right works in this build (decomp: once wired; #604)
+bool invert_camera_x_on();         // ... and is on (input_map::invert_camera_x)
 void set_camera_speed(float s);
 bool mouse_camera();
 void set_mouse_camera(bool on);

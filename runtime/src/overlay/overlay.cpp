@@ -3093,6 +3093,7 @@ void controls_controller_page(input_map::Mapping& m, bool pro) {
     o.deadzone = m.deadzone;
     o.invert_camera_y = m.invert_camera_y;
     o.invert_camera_x = m.invert_camera_x;
+    o.invert_x_available = mods::invert_camera_x_available();
     o.rumble = rumble::enabled();
     o.rumble_available = input::has_rumble();
 #ifdef __ANDROID__

@@ -796,9 +796,12 @@ void register_builtin() {
     {
         Item it;
         it.id = "camera.invert-x", it.tab = "camera", it.label = "Invert camera left/right", it.kind = Kind::Toggle;
-        it.help = "The camera, first person and aiming turn the other way left and right.";
+        // the decomp build until its camera carries the points (mods/camera.cpp): dimmed, the saved value kept
+        it.help = mods::invert_camera_x_available() ? "The camera, first person and aiming turn the other way left and right."
+                                                    : "Recompiled version only for now.";
         it.get = [] { return input_map::invert_camera_x() ? 1.0f : 0.0f; };
         it.set = [](float v) { set_invert_camera_x(v >= 0.5f); };
+        it.enabled = [] { return mods::invert_camera_x_available(); };
         add(std::move(it));
     }
     {

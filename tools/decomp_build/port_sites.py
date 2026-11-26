@@ -34,6 +34,13 @@ SD = "wwhd_src/d/hd_scene_save_data.cpp"
 TM = "wwhd_src/nw/lyt/TextMeasureCore.cpp"
 
 
+# An OPTION site belongs to a port option (runtime/src/mods/camera.cpp invert_camera_x_available) that the decomp
+# build offers only once the decompiled source carries its point: such a site never keeps its function recompiled
+# (a recompiled fallback would drop the decompilation's own changes to it), and while the marker is missing the
+# function runs decompiled without it and the runtime switches the option off (gen.py: hooks.cpp kUnwiredSites).
+INVERT_X = "Invert camera left/right (issue #604)"
+
+
 def _p(site, func, path, macro):
     """a point that names its site: marker `MACRO(0xSITE`"""
     return dict(site=site, func=func, path=path, marker="%s(0x%08X" % (macro, site))
@@ -103,13 +110,15 @@ SITES = [
     _p(0x0250074C, 0x025006D8, CU, "PORT_CAMERA_F"),     # dCamera_c::initPad
     _p(0x02506C68, 0x02506964, CS, "PORT_CAMERA_F"),     # dCamera_c::CalcSubjectAngle: one statement, compiled twice
     dict(site=0x02506C80, func=0x02506964, path=CS, marker="PORT_CAMERA_F(0x02506C68"),
-    # ... and its x (Invert camera left/right, issue #604): moved once the decompilation carries these points
-    _p(0x02171B28, 0x0216F7FC, "wwhd_src/d/actor/d_a_himo2_move.cpp", "PORT_CAMERA_F"),  # new_himo2_move, compiled twice
-    dict(site=0x02171DCC, func=0x0216F7FC, path="wwhd_src/d/actor/d_a_himo2_move.cpp", marker="PORT_CAMERA_F(0x02171B28"),
-    _p(0x024F9D98, 0x024F9BF4, CU, "PORT_CAMERA_F"),     # dCamera_c::updatePad
-    _p(0x0250073C, 0x025006D8, CU, "PORT_CAMERA_F"),     # dCamera_c::initPad
-    _p(0x02506C5C, 0x02506964, CS, "PORT_CAMERA_F"),     # dCamera_c::CalcSubjectAngle: one statement, compiled twice
-    dict(site=0x02506C74, func=0x02506964, path=CS, marker="PORT_CAMERA_F(0x02506C5C"),
+    # ... and its x (Invert camera left/right, issue #604). OPTION sites: moved whenever the function is decompiled
+    # (game build), so they never keep it recompiled; without the marker the option is off in that build (unwired())
+    dict(_p(0x02171B28, 0x0216F7FC, "wwhd_src/d/actor/d_a_himo2_move.cpp", "PORT_CAMERA_F"), option=INVERT_X),  # new_himo2_move
+    dict(site=0x02171DCC, func=0x0216F7FC, path="wwhd_src/d/actor/d_a_himo2_move.cpp", marker="PORT_CAMERA_F(0x02171B28",
+         option=INVERT_X),                                                                 # ... the statement compiled twice
+    dict(_p(0x024F9D98, 0x024F9BF4, CU, "PORT_CAMERA_F"), option=INVERT_X),  # dCamera_c::updatePad
+    dict(_p(0x0250073C, 0x025006D8, CU, "PORT_CAMERA_F"), option=INVERT_X),  # dCamera_c::initPad
+    dict(_p(0x02506C5C, 0x02506964, CS, "PORT_CAMERA_F"), option=INVERT_X),  # dCamera_c::CalcSubjectAngle, compiled twice
+    dict(site=0x02506C74, func=0x02506964, path=CS, marker="PORT_CAMERA_F(0x02506C5C", option=INVERT_X),
     # First person and item aims with the mouse camera (mods/camera.cpp, issue #558): CalcSubjectAngle's GamePad (gyro)
     # turn, and subjectCamera's view ease of V and U (fast mode: subjectCamera's hook runs the decompiled body)
     _p(0x02506CEC, 0x02506964, CS, "PORT_CAMERA_SUBJECT"),
@@ -220,6 +229,13 @@ EMPTY = [
 
 def moved(listed, texts):
     """the SITES whose function is in `listed` (decompiled) and whose source text (texts: path -> text as compiled)
-    carries the marker, and the EMPTY sites whose function is in `listed` (path: the handler's file)"""
-    return ([s for s in SITES if s["func"] in listed and s["marker"] in texts.get(s["path"], "")] +
+    carries the marker (an OPTION site: marker or not), and the EMPTY sites whose function is in `listed` (path: the
+    handler's file)"""
+    return ([s for s in SITES if s["func"] in listed and (s["marker"] in texts.get(s["path"], "") or s.get("option"))] +
             [dict(s, path="runtime/src/game_hooks.cpp: empty") for s in EMPTY if s["func"] in listed])
+
+
+def unwired(listed, texts):
+    """the OPTION sites moved without their marker: their function runs decompiled without the port point, so the
+    runtime switches their option off (hooks.cpp kUnwiredSites)"""
+    return [s for s in SITES if s.get("option") and s["func"] in listed and s["marker"] not in texts.get(s["path"], "")]
