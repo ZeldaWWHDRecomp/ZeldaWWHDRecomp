@@ -366,6 +366,11 @@ int dist_rule_mode() {
     static const int m = getenv("WWHD_INTERP_CAM_DIST_RULE") ? atoi(getenv("WWHD_INTERP_CAM_DIST_RULE")) : camera::kDistCollision;
     return m;
 }
+// along walls (#585): blended at the nearer distance; debug WWHD_INTERP_CAM_WALL=0 cuts them again
+bool wall_blend() {
+    static const bool on = !getenv("WWHD_INTERP_CAM_WALL") || atoi(getenv("WWHD_INTERP_CAM_WALL")) != 0;
+    return on;
+}
 // what the camera's logic did this step (bumpCheck hook), per camera process
 struct CamStep {
     uint32_t cam = 0;
@@ -414,7 +419,7 @@ struct Prev {
     uint32_t cam = 0; CamState s{}; bool valid = false; bool snap = true; uint64_t snap_step = ~0ull;
     uint64_t used = 0;         // when the slot was last asked for (history_slot; 0 = unused)
     float last_step = 0;       // the camera's movement over its previous step (cam_snap)
-    bool dist_rule = true;     // the step's 10 % distance rule applies (decided with the snap)
+    int dist_mode = camera::kDistSnap;  // what the step's 10 % distance rule does (decided with the snap)
     float trim = 0;            // letterbox height (dCamera_c mTrimHeight) at the exact step
     CamState drawn{};          // the camera as camera_draw drew it on pass drawn_pass (blended or exact)
     uint64_t drawn_pass = ~0ull;
@@ -1313,21 +1318,22 @@ static void camera_draw_body(Cpu* c) {
             if (!g_hold) {  // logic pass: the step's snap decision
                 p->snap = step_is_cut(p->s, cur, p->last_step);
                 p->snap_step = g_logic_steps;
-                p->dist_rule = camera::distance_rule_applies(step_info(cam, g_logic_steps), dist_rule_mode());
+                const float la = camera::dist(p->s.eye, p->s.center), lb = camera::dist(cur.eye, cur.center);
+                const camera::StepInfo info = step_info(cam, g_logic_steps);
+                p->dist_mode = camera::distance_mode(info, dist_rule_mode(), wall_blend(), la, lb);
                 static int dist_trace = getenv("WWHD_INTERP_CAM_DIST_TRACE") ? atoi(getenv("WWHD_INTERP_CAM_DIST_TRACE")) : 0;
-                if (dist_trace > 0 && !p->snap) {
-                    const float la = camera::dist(p->s.eye, p->s.center), lb = camera::dist(cur.eye, cur.center);
-                    if (camera::distance_jump(la, lb)) {
-                        dist_trace--;
-                        LOG("[interp] camera %08X step %llu: distance %.1f -> %.1f (%s)", cam, (unsigned long long)g_logic_steps, la, lb,
-                            p->dist_rule ? "drawn exactly: collision pull-in or event camera" : "blended");
-                    }
+                if (dist_trace > 0 && !p->snap && camera::distance_jump(la, lb)) {
+                    dist_trace--;
+                    LOG("[interp] camera %08X step %llu: distance %.1f -> %.1f (%s)", cam, (unsigned long long)g_logic_steps, la, lb,
+                        p->dist_mode == camera::kDistSnap   ? "drawn exactly: collision pull-in or event camera"
+                        : p->dist_mode == camera::kDistNear ? "blended at the nearer distance: along a wall"
+                                                            : "blended");
                 }
             }
             if (p->snap_step == g_logic_steps && !p->snap) {
                 // (a shaking camera: the base camera blended, the new step's shake on top)
                 const camera::Shake shake = read_shake(cam);
-                write_cam(cam, camera::blend_shaken(p->s, p->shake, cur, shake, pass_t(), p->dist_rule));
+                write_cam(cam, camera::blend_shaken(p->s, p->shake, cur, shake, pass_t(), p->dist_mode));
                 static int shake_trace = getenv("WWHD_INTERP_CAM_TRACE") ? atoi(getenv("WWHD_INTERP_CAM_TRACE")) : 0;
                 if (shake_trace > 0 && (shake.on || p->shake.on)) {
                     shake_trace--;
@@ -1465,7 +1471,8 @@ bool zoom_ease(Cpu* c, void (*orig)(Cpu*)) {
 // bumpCheck sets 0x80 (wall hit, eye placed in front of it) or 0x80000 (corner). The step's
 // camera_draw applies the 10 % distance rule (interp_camera.h) only on such steps, and for event and
 // demo cameras (style algorithm 11: mCamParam +4 -> +4; the demo object's active camera,
-// dDemo_object_c +0x84).
+// dDemo_object_c +0x84). Whether the camera's previous step had a hit too (pulled_before) tells a
+// camera following a wall from a sudden pull-in (#585).
 extern "C" void f_024FD11C_orig(Cpu* c);
 extern "C" void hook_024FD11C(Cpu* c) {
     using namespace interp;
@@ -1486,6 +1493,13 @@ extern "C" void hook_024FD11C(Cpu* c) {
         slot = &g_cam_step[0];
         for (auto& s : g_cam_step)
             if (s.step == ~0ull || (slot->step != ~0ull && s.step < slot->step)) slot = &s;
+    }
+    if (slot->cam == cam && slot->step == g_logic_steps) {
+        info.pulled = info.pulled || slot->info.pulled;  // (called again on the same step)
+        info.event = info.event || slot->info.event;
+        info.pulled_before = slot->info.pulled_before;
+    } else {
+        info.pulled_before = slot->cam == cam && slot->step + 1 == g_logic_steps && slot->info.pulled;
     }
     slot->cam = cam;
     slot->step = g_logic_steps;

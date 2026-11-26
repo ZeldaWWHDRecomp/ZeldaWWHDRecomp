@@ -1,5 +1,6 @@
 // Frame interpolation of the camera: the 10 % distance rule applies only on collision pull-ins and
-// event/demo cameras (runtime/src/interp_camera.h, issue #251), and real cuts still cut.
+// event/demo cameras (runtime/src/interp_camera.h, issue #251), a camera following a wall blends at
+// the nearer distance (issue #585), and real cuts still cut.
 #include "../src/interp_camera.h"
 
 #include <cassert>
@@ -81,6 +82,75 @@ int main() {
         // a small change on a collision step (sliding along the wall) still blends
         const CamState c = at(160);
         assert(!same(blend(b, c, 0.5f, rule), c));
+    }
+
+    // Turning the camera along a wall (issue #585): the collision check reports a hit on step after
+    // step and the distance changes by more than 10 % on many of them. Those steps blend (they were
+    // drawn exactly: 30 Hz steps above 30 fps), with the in-between eye at the nearer of the two
+    // distances along the blended direction, so it is never further out than both exact frames.
+    {
+        const StepInfo along{true, false, true};  // a hit on this step and on the one before
+        CamState a = at(200), b = at(175);        // -12.5 %, and turned by about 11 degrees
+        b.eye[0] = 34;
+        b.eye[2] = -171.66f;
+        const float la = radius(a), lb = radius(b);
+        assert(distance_jump(la, lb) && !distance_jump(la, lb, kPullInJump));
+        const int mode = distance_mode(along, kDistCollision, true, la, lb);
+        assert(mode == kDistNear);
+        float last_x = 0;
+        for (float t : {0.25f, 0.5f, 0.75f}) {
+            const CamState m = blend(a, b, t, mode);
+            assert(!same(m, b));
+            assert(std::fabs(radius(m) - std::min(la, lb)) < 1e-3f);  // not further out than either frame
+            assert(m.eye[0] > last_x && m.eye[0] < b.eye[0]);          // the direction turns on every frame
+            last_x = m.eye[0];
+        }
+        // moving back out along the wall (+14 %): drawn at the nearer distance, la, until the exact frame
+        const int out = distance_mode(along, kDistCollision, true, lb, la);
+        assert(out == kDistNear);
+        assert(std::fabs(radius(blend(b, a, 0.5f, out)) - lb) < 1e-3f);
+        // a small change along the wall still blends the distance linearly (as before #585)
+        const CamState c = at(180);
+        assert(std::fabs(radius(blend(at(175), c, 0.5f, distance_mode(along, kDistCollision, true, 175, 180))) - 177.5f) < 1e-3f);
+        // the old behaviour (debug WWHD_INTERP_CAM_WALL=0): drawn exactly
+        assert(distance_mode(along, kDistCollision, false, la, lb) == kDistSnap);
+        assert(same(blend(a, b, 0.5f, distance_mode(along, kDistCollision, false, la, lb)), b));
+    }
+
+    // A sudden pull-in still cuts: the first hit after steps without one, or a change of more than
+    // 30 % while the camera already touched the wall (a new obstacle).
+    {
+        const CamState a = at(400), b = at(150);
+        const int first = distance_mode(StepInfo{true, false, false}, kDistCollision, true, 400, 150);
+        assert(first == kDistSnap);
+        for (float t : {0.25f, 0.5f, 0.75f}) assert(same(blend(a, b, t, first), b));
+        // the first hit with a change of 12.5 % cuts too
+        assert(distance_mode(StepInfo{true, false, false}, kDistCollision, true, 200, 175) == kDistSnap);
+        const int jump = distance_mode(StepInfo{true, false, true}, kDistCollision, true, 400, 150);
+        assert(jump == kDistSnap && same(blend(a, b, 0.5f, jump), b));
+        assert(distance_mode(StepInfo{true, false, true}, kDistCollision, true, 200, 135) == kDistSnap);  // -32.5 %
+        assert(distance_mode(StepInfo{true, false, true}, kDistCollision, true, 200, 145) == kDistNear);  // -27.5 %
+    }
+
+    // Event and demo cameras keep the exact snap, also on steps with a hit after a hit
+    {
+        for (const StepInfo ev : {StepInfo{false, true, false}, StepInfo{true, true, true}}) {
+            const int mode = distance_mode(ev, kDistCollision, true, 300, 180);
+            assert(mode == kDistSnap);
+            assert(same(blend(at(300), at(180), 0.5f, mode), at(180)));
+        }
+    }
+
+    // The smooth zooms of #251 (no hit, no event camera) are unchanged: the distance blends linearly
+    {
+        for (const bool wall : {true, false}) {
+            const int mode = distance_mode(StepInfo{}, kDistCollision, wall, 300, 260);
+            assert(mode == kDistBlend);
+            const CamState m = blend(at(300), at(260), 0.25f, mode);
+            assert(std::fabs(radius(m) - 290.0f) < 1e-3f);
+        }
+        assert(distance_mode(StepInfo{}, kDistAlways, true, 300, 260) == kDistSnap);  // the old rule (=2)
+        assert(distance_mode(StepInfo{true, false, true}, kDistOff, true, 300, 100) == kDistBlend);  // rule off (=0)
     }
 
     // Event camera cut to a closer shot along the same line of sight while the camera was moving

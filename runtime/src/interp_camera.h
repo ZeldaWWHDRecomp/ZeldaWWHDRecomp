@@ -9,7 +9,7 @@
 //     recent motion, or the field of view jumped (doors, warps, mode changes, cutscene cuts);
 //   - blend(): the view turned more than 45 degrees in one step;
 //   - blend(): the eye-centre distance changed by more than 10 % in one step on a step where that
-//     rule applies (distance_rule_applies()).
+//     rule cuts (distance_mode(): event and demo cameras, a sudden pull-in by the collision check).
 //
 // The 10 % distance rule. The camera's collision check (dCamera_c::bumpCheck, 024FD11C) pulls the
 // eye in front of walls, trees and bushes abruptly; a blended distance there could put the
@@ -22,7 +22,20 @@
 // sets mEventFlags 0x80 / 0x80000, cleared by Run just before it), and to event and demo cameras,
 // where it is part of what catches cutscene cuts (a cut to a closer shot along the same line of
 // sight while the camera was already moving).
-// debug: WWHD_INTERP_CAM_DIST_RULE=0 turns the rule off, =2 applies it to every step (the old rule).
+//
+// Walls (issue #585). Turning the camera along a wall reports a hit on almost every step, and the
+// distance changes by more than 10 % on many of them: drawn exactly, those frames fell back to 30 Hz
+// steps above 30 fps. On collision steps the rule now cuts only a sudden pull-in:
+//   - the first step with a hit after steps without one (the camera was free and the wall pulls it
+//     in), or
+//   - a change of more than 30 % in one step (kPullInJump) while the camera already touched the wall
+//     (a new obstacle, a corner).
+// Any other collision step whose distance changes by more than 10 % (the camera follows the wall
+// from one hit to the next) is blended, with the in-between eye at min(la, lb) along the blended
+// direction: never further out than both exact frames, so it does not go into the obstacle the
+// exact frames were pulled in front of. Event and demo cameras keep the exact snap.
+// debug: WWHD_INTERP_CAM_DIST_RULE=0 turns the rule off, =2 applies it to every step (the old rule);
+// WWHD_INTERP_CAM_WALL=0 cuts every collision step with a > 10 % change again (before #585).
 #pragma once
 #include <algorithm>
 #include <cmath>
@@ -49,13 +62,32 @@ inline float dist(const float* a, const float* b) {
 struct StepInfo {
     bool pulled = false;  // the collision check hit a wall or corner and placed the eye in front of it
     bool event = false;   // an event or demo (cutscene) camera
+    bool pulled_before = false;  // the camera's previous step had a hit too (it was already at the wall)
 };
 enum DistRule { kDistOff = 0, kDistCollision = 1, kDistAlways = 2 };
 inline bool distance_rule_applies(const StepInfo& s, int rule) {
     return rule == kDistAlways || (rule == kDistCollision && (s.pulled || s.event));
 }
 // the distance changed abruptly (by more than 10 %) in one step
-inline bool distance_jump(float la, float lb) { return std::fabs(la - lb) > 0.1f * std::max(la, lb); }
+inline bool distance_jump(float la, float lb, float frac = 0.1f) { return std::fabs(la - lb) > frac * std::max(la, lb); }
+// a change of more than this on a collision step that follows one is a sudden pull-in (cut)
+constexpr float kPullInJump = 0.3f;
+
+// What blend() does with a step whose distance changes by more than 10 %:
+enum DistMode {
+    kDistBlend = 0,  // blends it (no rule on this step)
+    kDistSnap = 1,   // draws it exactly (event or demo camera, sudden pull-in, the old rules)
+    kDistNear = 2,   // blends it with the in-between eye at min(la, lb) (following a wall, #585)
+};
+// The step's mode, decided with its snap on the logic pass. `rule`: WWHD_INTERP_CAM_DIST_RULE;
+// `wall`: false = WWHD_INTERP_CAM_WALL=0 (every collision step with a jump cuts, as before #585).
+inline int distance_mode(const StepInfo& s, int rule, bool wall, float la, float lb) {
+    if (!distance_rule_applies(s, rule)) return kDistBlend;
+    if (rule == kDistAlways || s.event || !wall) return kDistSnap;
+    // a collision step (pulled, no event camera)
+    if (!s.pulled_before || distance_jump(la, lb, kPullInJump)) return kDistSnap;  // sudden pull-in
+    return kDistNear;
+}
 
 // Is the step a = S -> b = S+1 a cut? `last_step` is the camera's movement over the previous step
 // (updated here). Decided once per step, on the logic pass.
@@ -66,9 +98,10 @@ inline bool cam_snap(const CamState& a, const CamState& b, float& last_step, flo
     return step > cut || std::fabs(a.fovy - b.fovy) > 20.0f || (step > 60.0f && step > 4.0f * prev + 20.0f);
 }
 
-// Blended camera at t between the last exact step a and the new one b. `dist_rule`: the 10 % distance
-// rule applies on this step. Returns b (drawn exactly) when the step turned out to be a cut.
-inline CamState blend(const CamState& a, const CamState& b, float t, bool dist_rule) {
+// Blended camera at t between the last exact step a and the new one b. `dist_mode` (DistMode): what
+// a change of the distance by more than 10 % does on this step (true = kDistSnap, false =
+// kDistBlend). Returns b (drawn exactly) when the step turned out to be a cut.
+inline CamState blend(const CamState& a, const CamState& b, float t, int dist_mode) {
     using pacing::lerp_f;
     CamState m;
     for (int i = 0; i < 3; i++) {
@@ -89,7 +122,8 @@ inline CamState blend(const CamState& a, const CamState& b, float t, bool dist_r
         float cosang = 0;
         for (int i = 0; i < 3; i++) cosang += (da[i] / la) * (db[i] / lb);
         if (cosang < 0.7071f) return b;  // view turned more than 45 degrees in one step: a snap
-        if (dist_rule && distance_jump(la, lb)) return b;  // pulled in by the collision check, or an event cut
+        const bool jump = dist_mode != kDistBlend && distance_jump(la, lb);
+        if (jump && dist_mode == kDistSnap) return b;  // pulled in by the collision check, or an event cut
         float dir[3], ld = 0;
         // direction: halfway = normalised sum; other fractions slerp (constant angular speed over
         // the step's frames; nlerp would bunch them towards the middle)
@@ -100,7 +134,8 @@ inline CamState blend(const CamState& a, const CamState& b, float t, bool dist_r
             ld += dir[i] * dir[i];
         }
         ld = std::sqrt(ld);
-        float len = lerp_f(la, lb, t);
+        // along a wall: not further out than either exact frame (in front of the obstacle)
+        float len = jump ? std::min(la, lb) : lerp_f(la, lb, t);
         for (int i = 0; i < 3; i++) m.eye[i] = m.center[i] + (ld > 1e-3f ? dir[i] / ld : db[i] / lb) * len;
     } else {
         for (int i = 0; i < 3; i++) m.eye[i] = lerp_f(a.eye[i], b.eye[i], t);
@@ -161,9 +196,9 @@ inline CamState add_shake(const CamState& s, const Shake& k) {
 }
 // a and b drawn with shakes ka and kb: the blended base camera with b's shake (a step drawn
 // exactly by blend(), a cut, comes back as b itself)
-inline CamState blend_shaken(const CamState& a, const Shake& ka, const CamState& b, const Shake& kb, float t, bool dist_rule) {
-    if (!ka.on && !kb.on) return blend(a, b, t, dist_rule);
-    return add_shake(blend(unshake(a, ka), unshake(b, kb), t, dist_rule), kb);
+inline CamState blend_shaken(const CamState& a, const Shake& ka, const CamState& b, const Shake& kb, float t, int dist_mode) {
+    if (!ka.on && !kb.on) return blend(a, b, t, dist_mode);
+    return add_shake(blend(unshake(a, ka), unshake(b, kb), t, dist_mode), kb);
 }
 
 // The history of each camera process (interp.cpp Prev: the last exact step the blended frames start
