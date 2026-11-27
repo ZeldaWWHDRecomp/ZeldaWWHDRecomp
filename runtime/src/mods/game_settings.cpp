@@ -867,6 +867,16 @@ void register_builtin() {
         add(std::move(it));
     }
     {
+        Item it;  // issue #688 (mods/camera_zoom_hold.h): only with Look up and down
+        it.id = "camera.zoom-hold", it.tab = "camera", it.label = "Zoom while holding", it.kind = Kind::Choice;
+        it.help = "Look up and down: while this button is held, the right stick zooms as in the game. A tap of L still turns the GamePad page.";
+        it.choices = {"Off", "L", "ZL (targeting)"};
+        it.get = [] { return (float)mods::camera_zoom_hold(); };
+        it.set = [](float v) { mods::set_camera_zoom_hold((int)std::lround(v)); };
+        it.enabled = [] { return mods::camera_stick_pitch(); };
+        add(std::move(it));
+    }
+    {
         Item it;
         it.id = "camera.aim-stick", it.tab = "camera", it.label = "First-person aiming", it.kind = Kind::Choice;
         it.help = "The stick that aims in first person. Left: as on the GameCube; the right stick then moves and zooms.";

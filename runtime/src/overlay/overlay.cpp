@@ -3432,6 +3432,18 @@ void controls_camera_page() {
     help("Zoom (original): up brings the camera closer and lower, down further and higher, as in the game. Look up "
          "and down: the camera tilts up and down around Link and keeps its distance. Invert camera up/down still "
          "applies; the mouse camera's up/down follows this too. First person, aiming and targeting are unchanged.");
+    // issue #688: with Look up and down, the original zoom while a Wii U button is held (mods/camera_zoom_hold.h)
+    if (pitch == 1) {
+        ImGui::Indent();
+        int hold = mods::camera_zoom_hold();
+        if (combo("Zoom while holding", &hold, "Off\0L\0ZL (targeting)\0"))
+            hostui::post([hold] { mods::set_camera_zoom_hold(hold); });
+        help("While this button is held, the right stick's up/down (and the mouse's) zooms as in the original game; "
+             "let go and it looks up and down again. L: L1 / LB and Q by default (as bound to the Wii U's L in "
+             "Bindings); the game uses it only to turn the GamePad screen, which a tap of L still does, when you let "
+             "go. ZL (targeting): the stick zooms while Link targets, as in the original; targeting is unchanged.");
+        ImGui::Unindent();
+    }
     // issue #666: which controller stick aims in first person (mods/camera.cpp aim_stick_filter; saved, applies at once)
     int aim = mods::aim_left_stick() ? 1 : 0;
     if (combo("First-person aiming", &aim, "Right stick (HD)\0Left stick (classic)\0"))

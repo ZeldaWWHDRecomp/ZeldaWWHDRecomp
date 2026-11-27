@@ -6,6 +6,7 @@
 #include "mods/mods.h"
 #include "mods/play_context.h"
 #include "mods/camera_mouse.h"
+#include "mods/camera_zoom_hold.h"
 #include "platform/touch_options.h"
 #include <cassert>
 #include <cmath>
@@ -19,7 +20,8 @@
 static uint64_t clock_step=100;
 static bool enabled=true,captured=true,gyro_mouse=true,aiming=false,look=false;
 static float sensitivity=.15f,fp_scale=1.f;
-static bool inverted=false,look_pitch=false,aim_left=false;
+static bool inverted=false,look_pitch=false,aim_left=false,zoom_held=false;
+static int zoom_used=0;
 static mods::playctx::PlayContext ctx;  // the last play context (issue #666)
 void log_msg(const char*, ...) {}
 namespace mods {
@@ -34,6 +36,7 @@ bool trace_on(){return false;} void trace(const char*,...){}
 void link_executed(uint32_t){} void lock_on_filter_pad(input::PadState&){} void leaf_filter_pad(input::PadState&){}
 float steer_swing_degrees(bool){return 0;}
 bool camera_stick_pitch(){return look_pitch;}
+bool camera_zoom_held(){return zoom_held;} void camera_zoom_used(){zoom_used++;}
 bool aim_left_stick(){return aim_left;}
 void play_context_want(bool){} playctx::PlayContext play_context(){return ctx;}
 }
@@ -208,8 +211,58 @@ int main(){
         assert(rate(.5)==0&&close((float)lat(-0.0,60,-10),1.75f));       // descending limits: the same look direction
         assert(lat(-0.0,-10,60)==0&&std::signbit(m.f[1].ps0));           // used once: a later call keeps the game's delta
         assert(rate(0)==0&&!std::signbit(m.f[28].ps0)&&std::signbit(lat(-0.0,-10,60)));  // at rest: nothing changes
+        // Zoom while holding (issue #688): held, the rate stays in f28 (centre height, radius, latitude and field of
+        // view: the original zoom) and the latitude delta is the game's own; let go, Look up and down again
+        zoom_held=true;
+        assert(rate(.7)==.7&&close((float)lat(-.7*3.5,-10,60),-2.45f)&&zoom_used==1);
+        assert(rate(-1)==-1&&close((float)lat(3.5,-10,60),3.5f)&&zoom_used==2);
+        assert(rate(0)==0&&zoom_used==2);  // at rest it zooms nothing
+        zoom_held=false;
+        assert(rate(.7)==0&&close((float)lat(-0.0,-10,60),-2.45f)&&zoom_used==2);
         look_pitch=false;
+        zoom_held=true;  // Zoom (original): the hold changes nothing
+        assert(rate(.7)==.7&&lat(-0.0,-10,60)==0&&std::signbit(m.f[1].ps0)&&zoom_used==2);
+        zoom_held=false;
         assert(rate(.7)==.7&&lat(-0.0,-10,60)==0&&std::signbit(m.f[1].ps0));
+    }
+    // Zoom while holding: the button rules on the game's pad reads (camera_zoom_hold.h)
+    {
+        using camera_zoom_hold::State; using camera_zoom_hold::filter; using camera_zoom_hold::button;
+        using camera_zoom_hold::kTapSteps; using camera_zoom_hold::kOff;
+        using input::kL; using input::kZL; using input::kA;
+        constexpr int CL=camera_zoom_hold::kL, CZL=camera_zoom_hold::kZL;  // the choices (the button bits: kL, kZL)
+        State s;
+        auto run=[&](int ch,bool look,bool play,uint32_t raw,uint32_t out,float ry,bool zoomed,uint64_t now){return filter(s,ch,look,play,raw,out,ry,zoomed,now);};
+        assert(camera_zoom_hold::kDefault==CL&&button(kOff)==0&&button(CL)==kL&&button(CZL)==kZL);
+        // Look up and down off: nothing held, L reaches the game at once
+        assert(run(CL,false,true,kL,kL,0,false,1)==kL&&!s.held);
+        // L: a tap (no zoom) is held back while held, then given to the game for kTapSteps steps after the release
+        assert(run(CL,true,true,kL,kL,0,false,10)==0&&s.held);
+        assert(run(CL,true,true,kL,kL,0,false,11)==0&&s.held);  // still held back (also a second read of the step)
+        assert(run(CL,true,true,0,0,0,false,12)==kL&&!s.held);  // let go: the page turns
+        assert(run(CL,true,true,0,0,0,false,12)==kL);           // the step's other read (VPAD and KPAD)
+        assert(run(CL,true,true,0,0,0,false,13)==kL);
+        assert(run(CL,true,true,0,0,0,false,12+kTapSteps)==0);  // over
+        // L + the stick up or down: it zoomed, so no L at all, before or after
+        assert(run(CL,true,true,kL|kA,kL|kA,0,false,20)==kA&&s.held);
+        assert(run(CL,true,true,kL|kA,kL|kA,.9f,false,21)==kA);
+        assert(run(CL,true,true,kL,kL,0,false,22)==0);
+        assert(run(CL,true,true,0,0,0,false,23)==0&&run(CL,true,true,0,0,0,false,24)==0);
+        // ... the camera's word counts too (the mouse zoomed; the stick barely moved)
+        assert(run(CL,true,true,kL,kL,.1f,false,30)==0&&run(CL,true,true,kL,kL,.1f,true,31)==0&&run(CL,true,true,0,0,0,false,32)==0);
+        // a small stick drift is no zoom
+        assert(run(CL,true,true,kL,kL,.2f,false,40)==0&&run(CL,true,true,0,0,0,false,41)==kL);
+        // an L that a jump already took (Jump anywhere on L1: out has no L): held for the camera, no tap
+        assert(run(CL,true,true,kL,0,0,false,50)==0&&s.held&&run(CL,true,true,0,0,0,false,51)==0);
+        // out of play (menus): L as it is, though still held for the camera
+        assert(run(CL,true,false,kL,kL,0,false,60)==kL&&s.held&&run(CL,true,false,0,0,0,false,61)==0);
+        // pressed in play, let go after play ended (a talk began): no page turn then
+        assert(run(CL,true,true,kL,kL,0,false,70)==0&&run(CL,true,false,kL,kL,0,false,71)==0&&run(CL,true,false,0,0,0,false,72)==0);
+        // ZL: held while ZL is, and ZL always reaches the game (targeting unchanged); L untouched
+        assert(run(CZL,true,true,kZL,kZL,.9f,false,80)==kZL&&s.held);
+        assert(run(CZL,true,true,kL,kL,0,false,81)==kL&&!s.held);
+        // Off: never held
+        assert(run(kOff,true,true,kL|kZL,kL|kZL,1,false,90)==(kL|kZL)&&!s.held);
     }
     // First-person aiming: Left stick (classic) (issue #666): the production filter, the subject-camera hook and
     // Link's live status (gameInfo + 0x5CD8 / 0x5CDC, mapped above)
@@ -250,6 +303,7 @@ int main(){
     puts("First-person aiming: Left stick (classic) swaps the sticks only in first person, Right stick (HD) by default PASS");
     puts("Cannon mouse: routing, gyro exclusion, priority, sensitivity, repeated reads and mode transitions PASS");
     puts("Look up and down: the vertical rate goes to the latitude alone, once per manualCamera run, off by default PASS");
+    puts("Zoom while holding: the original zoom while held, L's tap on release, ZL and Off, Zoom (original) unchanged PASS");
     puts("First-person mouse look: degrees per view, once per step, ease, inversion, stale movement, mouse camera off PASS");
     puts("First-person mouse look: later reads of a step keep their movement, First-person sensitivity, 1 degree per point PASS");
 }

@@ -37,7 +37,8 @@ same values.
 
 ## What is on it
 
-- **Camera:** invert up/down, right stick up/down (Zoom (original) / Look up and down; `camera.stick-pitch`, #661),
+- **Camera:** invert up/down, right stick up/down (Zoom (original) / Look up and down; `camera.stick-pitch`, #661) and
+  zoom while holding (Off / L / ZL; `camera.zoom-hold`, #688, dimmed with Zoom),
   first-person aiming (Right stick (HD) / Left stick (classic); `camera.aim-stick`, #666), direct camera and its
   speed, mouse camera and its sensitivity, first person on R3 or the mouse wheel, letterbox while targeting.
 - **Controls:** face buttons, button prompts, shoulder names, face button colours (Off / Xbox / GameCube;

@@ -62,6 +62,30 @@ and the event cameras keep their own use of the stick. The mouse and touch
 camera's up/down follow the same choice. It is saved in the settings
 (`cameraStickPitch`); `WWHD_CAM_STICK_PITCH=1` (or `0`) overrides it for a run.
 
+**Zoom while holding** (right under it, only with Look up and down; issue #688)
+switches the stick back to the original zoom while a button is held: up closer and
+lower, down further and higher, at the game's speed and within its limits. Let go
+and the stick looks up and down again; the camera keeps the zoom and the tilt it
+has. The choice names a Wii U button, so it follows your bindings on every
+controller and the keyboard:
+
+- **L**, the default: L1 / LB, and Q on the keyboard. In play the game uses L only
+  to turn the GamePad screen between Items and Map; the camera never reads it, so
+  holding it changes neither the camera's mode nor targeting. While L is held in
+  play the game doesn't get it, so zooming doesn't turn the page; let go without
+  having zoomed and the game gets a short L press then: a tap of L still turns the
+  page (when you let go). With Jump anywhere or the moon jump on the same input,
+  that input jumps too: choose ZL, or give the jump another input.
+- **ZL (targeting)**: the stick zooms while Link targets (ZL held), with or
+  without something to target. ZL still reaches the game, so targeting is
+  unchanged; as in the original, pushing the stick while targeting runs the free
+  camera, and pressing ZL puts the camera behind Link.
+- **Off**: the stick always looks up and down.
+
+The mouse camera's up/down zooms too while the button is held. The mouse wheel
+stays first person (Mouse camera › First person on the wheel). Saved as
+`cameraZoomHold` (0 Off, 1 L, 2 ZL); `WWHD_CAM_ZOOM_HOLD` overrides it for a run.
+
 **First-person aiming** (Controls → Camera, the item menu's settings page under
 Camera, and the macOS Controls window; issue #666) chooses which controller stick
 aims in first person:

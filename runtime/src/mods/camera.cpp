@@ -555,11 +555,14 @@ extern "C" void hook_024FA9C8(Cpu* c) {
         stf32(cam + 0x178, 0.45f);  // above manual-start threshold, below stick-as-button threshold
         stf32(cam + 0x174, 0.0f);
     }
+    const uint32_t cur = c->r[4];
     f_024FA9C8_orig(c);
     if (wake) {
         stf32(cam + 0x178, value);
         stf32(cam + 0x174, y);
     }
+    // the camera's mode changes (0 follow, 1 targeting without a target, 2 with one, 4 first person, 12 manual ...)
+    if (trace_on() && c->r[3] != cur) trace("camera nextMode %u -> %u", cur, c->r[3]);
 }
 
 // f28: vertical stick rate (+1 = stick up = V decreases by PER degrees per step: the latitude step, [sp+0x14] at the
@@ -591,6 +594,8 @@ static void mouse_pitch_rate(Cpu* c, double per) {
 // its crawl / swim / flight adjustments, the blocked-follow rate at a limit, the wall check and every mode change
 // (targeting, events, first person, the follow camera taking over) stay the game's. Only manualCamera reads f28, so
 // lock-on, first person, aiming, the boat's ride camera and the event cameras keep their own use of the stick.
+// Zoom while holding (issue #688, camera_zoom_hold.h): while its button is held (L by default, or ZL) the rate stays
+// in f28, so the stick (and the mouse / swipe) zooms as in the original; the tilt so far stays where it is.
 struct LookPitch { bool pending = false; double rate = 0, per = 0; };
 static LookPitch g_look_pitch;  // the game thread only: from @0251053C to @02510DEC of the same manualCamera run
 static void look_pitch_take(Cpu* c, double per) {
@@ -598,6 +603,12 @@ static void look_pitch_take(Cpu* c, double per) {
     if (!camera_stick_pitch()) return;
     const double rate = c->f[28].ps0;
     if (rate == 0.0) return;  // at rest: the game's own values, untouched
+    if (camera_zoom_held()) {  // the game's zoom
+        camera_zoom_used();
+        static uint64_t n = 0;
+        if (trace_on() && (n++ % 10) == 0) trace("zoom hold: rate %.3f zooms (original)", rate);
+        return;
+    }
     g_look_pitch = {true, rate, per};
     c->f[28].ps0 = 0.0;
 }
@@ -730,8 +741,8 @@ extern "C" void site_025083C4(Cpu* c) { subject_ease_u(c, c->r[1] + 0x12, c->r[1
 static void camera_trace(uint32_t cam, const char* mode, int16_t before) {
     if (!trace_on()) return;
     int16_t after = (int16_t)ld16(cam + 0x42);
-    trace("camera mode=%s U=%d dU=%d V=%d manual=%llu dx=%.3f dy=%.3f synth=%d proc=%X type=%u mode=%u style=%u",
-          mode, after, (int16_t)(after - before), (int16_t)ld16(cam + 0x40),
+    trace("camera mode=%s U=%d dU=%d V=%d R=%.1f manual=%llu dx=%.3f dy=%.3f synth=%d proc=%X type=%u mode=%u style=%u",
+          mode, after, (int16_t)(after - before), (int16_t)ld16(cam + 0x40), ldf32(cam + 0x3C),
           (unsigned long long)g_manual_step, g_dx, g_dy, g_synth, link_proc(), ld32(cam + 0x51C), ld32(cam + 0x13C), ld32(cam + 0x514));
 }
 extern "C" void hook_0250D4E8(Cpu* c) {
