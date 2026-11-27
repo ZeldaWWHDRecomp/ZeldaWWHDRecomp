@@ -625,7 +625,7 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
         if not s.PORTABLE or not os.path.isfile(dst):
             shutil.copyfile(os.path.join(s.PKG, "sdk", "runtime", rf), dst)
             shutil.copymode(os.path.join(s.PKG, "sdk", "runtime", rf), dst)
-    os.replace(new, exe)
+    getattr(s, "replace_retrying", os.replace)(new, exe)  # (Windows: retried while the old game is still locked)
     times["link"] = time.time() - t0
     times["total"] = time.time() - t_all
     work_bytes = dir_size(work)

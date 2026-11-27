@@ -67,8 +67,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, os.path.join(ROOT, "tools", "recomp"))
 import builds as game_builds  # noqa: E402
-import native_returns  # noqa: E402
 sys.path.insert(0, HERE)
+import native_returns  # noqa: E402
 import port_sites  # noqa: E402
 
 
@@ -281,7 +281,11 @@ class Glue:
             # mkimage.py reads the RPX with this repository's tools/rpx.py
             env = dict(os.environ, PYTHONPATH=os.pathsep.join(
                 [os.path.join(ROOT, "tools")] + ([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else [])))
-            r = subprocess.run([sys.executable, os.path.join(self.src, "tools", "verify", "mkimage.py"),
+            # (through -c: an isolated Python, such as the Windows installer's embedded one, ignores PYTHONPATH)
+            boot = ("import os, runpy, sys; "
+                    "sys.path[:0] = [p for p in os.environ['PYTHONPATH'].split(os.pathsep) if p]; "
+                    "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')")
+            r = subprocess.run([sys.executable, "-c", boot, os.path.join(self.src, "tools", "verify", "mkimage.py"),
                                 self.rpx, self.image + ".tmp"], env=env, capture_output=True, text=True)
             if r.returncode:
                 sys.exit("gen.py: mkimage.py failed:\n%s%s" % (r.stdout, r.stderr))

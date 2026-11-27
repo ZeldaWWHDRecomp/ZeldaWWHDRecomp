@@ -189,7 +189,9 @@ def main():
             store.get_file("targets", tk, tpath)
     # through decl_lint_run.py: autoglue gets the zero-filled sections of RPX, not of the decompilation's own
     # game/code/cking.rpx (a link it does not ship); with the cache, its per-unit entries
-    cmd = [sys.executable, os.path.join(HERE, "decl_lint_run.py"), "-j", str(a.jobs), "--gen", a.gen, "--image", a.image, "--rpx", a.rpx,
+    # -X utf8: the compile audit's multiprocessing workers start with -I, which ignores PYTHONUTF8, and would write the
+    # decompilation's sources (Japanese comments) with Windows' ANSI code page; an explicit -X utf8 reaches the workers
+    cmd = [sys.executable, "-X", "utf8", os.path.join(HERE, "decl_lint_run.py"), "-j", str(a.jobs), "--gen", a.gen, "--image", a.image, "--rpx", a.rpx,
            "--runtime", os.path.join(ROOT, "runtime"), "--tools", os.path.join(ROOT, "tools"), "--out-dir", work,
            "--handoff", table + ".tmp"]
     with open(logf, "w") as log:
