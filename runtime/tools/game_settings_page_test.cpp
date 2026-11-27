@@ -415,6 +415,11 @@ int main() {
             for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
         assert(game_settings_text::tr("Mouse wheel", 3) == "Mausrad" && game_settings_text::tr("Bindings", 2) == "Assignations");
         assert(!game_settings_text::table().count("First person on R3 / wheel"));  // the old switch is gone from the page
+        // ... and its Wheel zoom smoothing (Off / 0.15 s / 0.3 s / 0.5 s / 1 s; decimal commas)
+        for (const char* w : {"Wheel zoom smoothing", "0.15 s", "0.3 s", "0.5 s", "1 s",
+                              "How long the camera takes to catch up with the wheel's zoom. Off: at once."})
+            for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
+        assert(game_settings_text::tr("0.3 s", 3) == "0,3 s");
     }
     std::puts("game_settings_page_test: ok");
 }

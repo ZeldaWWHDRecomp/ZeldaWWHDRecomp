@@ -247,6 +247,7 @@ struct UIState {
 @property(strong) NSPopUpButton* stickPitch;  // Right stick up/down (#661)
 @property(strong) NSPopUpButton* zoomHold;    // Zoom while holding (#688), with Look up and down only
 @property(strong) NSPopUpButton* mouseWheel;  // Mouse wheel: First person / Zoom / Bindings (#696)
+@property(strong) NSPopUpButton* wheelSmoothing;  // Wheel zoom smoothing (#696), with Zoom only
 @property(strong) NSPopUpButton* aimStick;    // First-person aiming: right / left stick (#666)
 @property(strong) NSButton* skipController;
 @property(strong) NSPopUpButton* prompts;        // in-game button prompts (#143)
@@ -1214,7 +1215,14 @@ static NSTextField* label(NSString* s) {
                          @"brings the camera closer, back further, as the right stick's zoom in the game, with its limits. "
                          @"Bindings: the wheel is the Wheel up / Wheel down bindings.";
     self.mouseWheel = mouseWheel;
-    NSStackView* cameras = [NSStackView stackViewWithViews:[cameraButtons arrayByAddingObjectsFromArray:@[label(@"Mouse wheel:"), mouseWheel]]];
+    NSPopUpButton* wheelSmoothing = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [wheelSmoothing addItemsWithTitles:@[@"Off", @"0.15 s", @"0.3 s", @"0.5 s", @"1 s"]];
+    wheelSmoothing.target = self;
+    wheelSmoothing.action = @selector(wheelSmoothingChanged:);
+    wheelSmoothing.toolTip = @"With Mouse wheel: Zoom: how long the camera takes to catch up with the wheel's zoom. Off: at once.";
+    self.wheelSmoothing = wheelSmoothing;
+    NSStackView* cameras = [NSStackView stackViewWithViews:[cameraButtons arrayByAddingObjectsFromArray:@[label(@"Mouse wheel:"), mouseWheel,
+                                                                                                          label(@"Smoothing:"), wheelSmoothing]]];
     cameras.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     cameras.spacing = 24;
     NSSlider* cameraSpeed = [NSSlider sliderWithValue:mods::camera_speed() minValue:.5 maxValue:2 target:self action:@selector(cameraSpeedChanged:)];
@@ -1349,6 +1357,8 @@ static NSTextField* label(NSString* s) {
     for (NSUInteger i=0;i<self.cameraButtons.count;++i)
         self.cameraButtons[i].state = mods::manager::find(ids[i])->enabled() ? NSControlStateValueOn : NSControlStateValueOff;
     [self.mouseWheel selectItemAtIndex:mods::mouse_wheel_mode()];
+    [self.wheelSmoothing selectItemAtIndex:mods::wheel_zoom_smoothing()];
+    self.wheelSmoothing.enabled = mods::mouse_wheel_mode() == 1;
     self.cameraSpeed.doubleValue = mods::camera_speed();
     self.mouseSensitivity.doubleValue = mods::mouse_sensitivity();
     self.mouseFirstPerson.doubleValue = mods::mouse_first_person_scale();
@@ -1758,7 +1768,9 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
 }
 - (void)mouseWheelChanged:(NSPopUpButton*)p {
     if (!mods::manager::set_mouse_wheel((int)p.indexOfSelectedItem)) [p selectItemAtIndex:mods::mouse_wheel_mode()];
+    self.wheelSmoothing.enabled = mods::mouse_wheel_mode() == 1;
 }
+- (void)wheelSmoothingChanged:(NSPopUpButton*)p { mods::set_wheel_zoom_smoothing((int)p.indexOfSelectedItem); }
 - (void)cameraSpeedChanged:(NSSlider*)s { game_settings::set_camera_speed(s.floatValue); }
 - (void)mouseSensitivityChanged:(NSSlider*)s { game_settings::set_mouse_sensitivity(s.floatValue); }
 - (void)mouseFirstPersonChanged:(NSSlider*)s { game_settings::set_mouse_first_person_scale(s.floatValue); }

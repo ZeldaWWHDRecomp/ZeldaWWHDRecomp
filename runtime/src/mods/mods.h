@@ -270,6 +270,8 @@ int camera_zoom_hold();            // Zoom while holding (#688): camera_zoom_hol
 void set_camera_zoom_hold(int choice);
 bool camera_zoom_held();           // the zoom button is held now (Look up and down): the stick zooms (controller_play.cpp)
 void camera_zoom_used();           // camera.cpp: the camera zoomed through it (no page turn on L's release)
+int wheel_zoom_smoothing();        // Mouse wheel: Zoom's ease (#696): mouse_wheel::Smoothing (0 Off .. 4; 2 default)
+void set_wheel_zoom_smoothing(int choice);
 bool aim_left_stick();             // First-person aiming: false Right stick (HD, default), true Left stick (classic) (#666)
 void set_aim_left_stick(bool left);
 float steer_swing_degrees(bool player_camera);  // camera.cpp, once per logic step

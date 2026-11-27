@@ -951,6 +951,16 @@ void register_builtin() {
         add(std::move(it));
     }
     {
+        Item it;  // issue #696 (mods/mouse_wheel.h kSmoothSeconds): only with Mouse wheel: Zoom
+        it.id = "camera.wheel-smoothing", it.tab = "camera", it.label = "Wheel zoom smoothing", it.kind = Kind::Choice;
+        it.help = "How long the camera takes to catch up with the wheel's zoom. Off: at once.";
+        it.choices = {"Off", "0.15 s", "0.3 s", "0.5 s", "1 s"};
+        it.get = [] { return (float)mods::wheel_zoom_smoothing(); };
+        it.set = [](float v) { mods::set_wheel_zoom_smoothing((int)std::lround(v)); };
+        it.enabled = [] { return mods::mouse_wheel_mode() == 1; };
+        add(std::move(it));
+    }
+    {
         Item it;
         it.id = "camera.walk-direction", it.tab = "camera", it.label = "Walking direction", it.kind = Kind::Choice;
         it.help = "Kept: Link walks on the way you pushed the stick while the camera turns.";

@@ -51,8 +51,8 @@
 //   First person: R3 already toggles the game's first-person look (measured: R3 at rest -> camera
 //   distance 250 -> 20 in 7 steps, R3 again -> back). The wheel forward enters first person, backward leaves it, as
 //   a one-step R3 press.
-//   Zoom: the wheel's notches become manualCamera's own vertical rate f28 at @0251053C (wheel_zoom_rate: the full
-//   rate for 4 steps a notch, mouse_wheel::Zoom), so the game zooms (centre height, radius, latitude, field of view)
+//   Zoom: the wheel's notches become manualCamera's own vertical rate f28 at @0251053C (wheel_zoom_rate: 4 steps of
+//   the full rate a notch, given at once or eased out by Wheel zoom smoothing, mouse_wheel::Zoom), so the game zooms (centre height, radius, latitude, field of view)
 //   within its style's limits, at its speed and with its wall check, in either Right stick up/down choice (Look up
 //   and down leaves the wheel's rate in f28 and adds the stick's to the latitude only). nextMode is woken as for the
 //   mouse (a stick magnitude in its decision only) while a zoom waits, so it runs from the follow camera too, in the
@@ -671,15 +671,16 @@ static void look_pitch_give(Cpu* c) {
 // and down took the stick's (and the mouse's) rate, so it always zooms. True 60: each step of a 30 Hz frame gets the
 // frame's rate, as the game's stick (manRangeAdd takes x dt).
 static void wheel_zoom_rate(Cpu* c) {
+    const float part = mouse_wheel::smooth_part(wheel_zoom_smoothing());  // Wheel zoom smoothing (Off: all at once)
     float w;
     double pending;
     {
         std::lock_guard<std::mutex> lk(g_mu);
 #if WWHD_DECOMP
-        if (t60::active() && wwhd_t60_steps > 1) w = mouse_wheel::frame_rate(g_zoom, wwhd_t60_frame, step());
+        if (t60::active() && wwhd_t60_steps > 1) w = mouse_wheel::frame_rate(g_zoom, wwhd_t60_frame, step(), part);
         else
 #endif
-            w = mouse_wheel::rate(g_zoom, step());
+            w = mouse_wheel::rate(g_zoom, step(), part);
         pending = g_zoom.pending;
     }
     if (w == 0) return;

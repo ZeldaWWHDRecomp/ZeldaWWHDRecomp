@@ -14,6 +14,8 @@
 //                                        (camera.cpp look_pitch, issue #661)
 //   cameraZoomHold (WWHD_CAM_ZOOM_HOLD)  with Look up and down, the stick zooms while this Wii U button is held:
 //                                        0 off, 1 L (default), 2 ZL (camera_zoom_hold.h, issue #688)
+//   wheelZoomSmoothing (WWHD_WHEEL_ZOOM_SMOOTH)  Mouse wheel: Zoom's ease: 0 off (instant), 1..4 a catch-up time of
+//                                        0.15 / 0.3 (default) / 0.5 / 1 s (mouse_wheel.h, issue #696)
 //   aimLeftStick (WWHD_AIM_LEFT_STICK)   first-person aiming: 0 right stick as HD (default), 1 left stick as the
 //                                        GameCube (camera.cpp aim_stick_filter, aim_stick.h, issue #666)
 // WWHD_STEER_LOG=1 logs the camera, Link's facing and the kept angle ("[steer] ...").
@@ -29,6 +31,7 @@
 #include <string>
 
 #include "camera_zoom_hold.h"
+#include "mouse_wheel.h"
 #include "guest_addr.h"
 #include "mods.h"
 #include "play_context.h"
@@ -75,6 +78,7 @@ Option g_pinch{"WWHD_PINCH_FOV", "touchPinchFov", 1, 1};
 Option g_pitch{"WWHD_CAM_STICK_PITCH", "cameraStickPitch", 0, 1};
 Option g_zoom_hold{"WWHD_CAM_ZOOM_HOLD", "cameraZoomHold", camera_zoom_hold::kDefault, camera_zoom_hold::kChoiceCount - 1};
 Option g_aim_left{"WWHD_AIM_LEFT_STICK", "aimLeftStick", 0, 1};
+Option g_wheel_smooth{"WWHD_WHEEL_ZOOM_SMOOTH", "wheelZoomSmoothing", mouse_wheel::kSmoothDefault, mouse_wheel::kSmoothCount - 1};
 
 steer::Options options() {
     steer::Options o;
@@ -148,6 +152,8 @@ void set_camera_stick_pitch(bool look) { g_pitch.set(look); }
 int camera_zoom_hold() { return g_zoom_hold.get(); }
 void set_camera_zoom_hold(int choice) { g_zoom_hold.set(choice); }
 bool aim_left_stick() { return g_aim_left.get() != 0; }
+int wheel_zoom_smoothing() { return g_wheel_smooth.get(); }
+void set_wheel_zoom_smoothing(int choice) { g_wheel_smooth.set(choice); }
 void set_aim_left_stick(bool left) { g_aim_left.set(left); }
 
 // camera.cpp filter_pad, once per logic step: the swing's degrees for the camera's angle (0 none).

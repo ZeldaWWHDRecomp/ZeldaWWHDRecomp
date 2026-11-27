@@ -317,10 +317,15 @@ with or without the mouse camera:
 - **Zoom**: forward brings the camera closer, backward takes it further, with the
   game's own zoom: the same thing the right stick's up/down does in the original
   (**Right stick up/down: Zoom (original)**), with the game's limits on how close and
-  how far, its speed and its wall checks. One notch zooms as far as the right stick
-  held fully up or down for 4 logic steps (2/15 s), at the stick's speed; a trackpad's
-  small scrolls add their share, so it zooms smoothly; scrolling the other way first
-  stops the zoom. It works in either **Right stick up/down** choice (with Look up and
+  how far, its wall checks. One notch zooms as far as the right stick held fully up or
+  down for 4 logic steps (2/15 s); a trackpad's small scrolls add their share, so it
+  zooms smoothly; scrolling the other way first stops the zoom. **Wheel zoom smoothing**
+  (right under it, with Zoom only) is how long the camera takes to catch up with the
+  wheel: **Off** gives each notch's zoom at once, **0.15 s**, **0.3 s** (the default),
+  **0.5 s** or **1 s** ease it out (it moves quickly at first and slows down as it
+  arrives; the time is when 95 % of it is done). Either way the game still moves the
+  drawn camera there with its own follow, as with the stick. Saved as
+  `wheelZoomSmoothing` (0 Off, 1-4); `WWHD_WHEEL_ZOOM_SMOOTH` overrides it for a run. It works in either **Right stick up/down** choice (with Look up and
   down the stick looks and the wheel zooms) and at every frame rate (30, 60 and 120
   fps, and the decomp version's true 60 / 120 fps logic: a notch is the same zoom).
   It zooms the free camera: on foot, swimming and in the boat's free look, the styles

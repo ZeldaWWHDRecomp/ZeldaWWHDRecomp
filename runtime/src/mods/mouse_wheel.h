@@ -9,9 +9,12 @@
 // Zoom: manualCamera (dCamera_c, 0250FDC8) zooms by its vertical rate f28 (+1 the stick fully up: closer and lower),
 // each logic step by the style's steps: centre height, radius, latitude and field of view, each kept in the style's
 // limits by limited_range_addition (manRangeAdd), with the wall check after it. A notch adds kStepsPerNotch steps of
-// the full rate to `pending`; camera.cpp gives the camera at most the full rate per 30 Hz step (rate()) until it is
-// used up, so a notch zooms as far as the stick held fully for kStepsPerNotch steps, at the stick's speed, and the
-// game's limits, speed and wall checks stay. Trackpads' fractional scrolls add their fraction (a smooth zoom).
+// the full rate to `pending` (as far as the stick held fully for 4 steps zooms); camera.cpp gives the camera a part
+// of it per 30 Hz step (rate()) until it is used up, so the game's limits and wall checks stay. How large a part is
+// Wheel zoom smoothing (issue #696, the reporter's follow-up): Off gives it all in one step (instant); the others
+// ease out exponentially, the share 1 - e^(-step / tau) per step, with the catch-up time (95 %) = 3 tau. The drawn
+// camera then still follows with the game's own follow ratio, as for the stick. Trackpads' fractional scrolls add
+// their fraction (a smooth zoom).
 // Frame-rate independence: the logic runs at 30 Hz at 30 / 60 / 120 fps (interpolated), and the decomp build's true
 // 60 / 120 (N = 2 / 4 steps a frame) gives each step of a 30 Hz frame the frame's rate, as the game's stick does
 // (PORT_CAMERA_RATE @0251053C), and manRangeAdd takes x dt itself (frame_rate()).
@@ -45,6 +48,19 @@ inline bool owns_wheel(int mode) { return mode == kFirstPerson || mode == kZoom;
 constexpr float kStepsPerNotch = 4.0f;
 // at most this much zoom waits (4 notches): a fast scroll does not keep the camera zooming long after it
 constexpr float kMaxPending = 4 * kStepsPerNotch;
+// Wheel zoom smoothing: the catch-up time (s) of each choice; 0 Off (instant). Default 0.3 s.
+enum Smoothing : int { kSmoothOff = 0, kSmoothCount = 5 };
+constexpr float kSmoothSeconds[kSmoothCount] = {0.0f, 0.15f, 0.3f, 0.5f, 1.0f};
+constexpr int kSmoothDefault = 2;
+constexpr float kStepSeconds = 1.0f / 30.0f;  // a logic step (30 Hz at every frame rate; true 60 takes a frame's rate)
+// the share of what waits that one 30 Hz step gives (1: all, Off)
+inline float smooth_part(int choice) {
+    if (choice <= kSmoothOff || choice >= kSmoothCount) return 1.0f;
+    const float tau = kSmoothSeconds[choice] / 3.0f;
+    return 1.0f - std::exp(-kStepSeconds / tau);
+}
+// what is left below this (full-rate steps; about one unit of distance) is given at once, so the ease ends
+constexpr float kSnap = 0.05f;
 // zoom the camera did not take for this many steps (first person, an event, a menu, a camera without the zoom) is
 // dropped, so it does not zoom later
 constexpr uint64_t kDropSteps = 4;
@@ -67,29 +83,30 @@ inline void drop_stale(Zoom& z, uint64_t now) {
 }
 // a zoom waits for the camera (true 60: also the rest of the frame that took the last of it)
 inline bool wants(const Zoom& z) { return z.pending != 0 || z.frame_rate != 0; }
-// one 30 Hz step's rate (|rate| <= 1), taken from pending
-inline float rate(Zoom& z, uint64_t now) {
-    const float r = std::clamp(z.pending, -1.0f, 1.0f);
+// one 30 Hz step's rate, `part` (smooth_part) of what waits, taken from pending
+inline float rate(Zoom& z, uint64_t now, float part = 1.0f) {
+    float r = part >= 1.0f ? z.pending : z.pending * part;
+    if (std::fabs(z.pending - r) < kSnap) r = z.pending;
     z.pending -= r;
     if (std::fabs(z.pending) < 1e-6f) z.pending = 0;
     if (r != 0) z.last = now;
     return r;
 }
 // true 60 (N steps a frame): the frame's rate on each of its steps (the game takes x dt per step)
-inline float frame_rate(Zoom& z, uint32_t frame, uint64_t now) {
+inline float frame_rate(Zoom& z, uint32_t frame, uint64_t now, float part = 1.0f) {
     if (z.frame != frame) {
         z.frame = frame;
-        z.frame_rate = rate(z, now);
+        z.frame_rate = rate(z, now, part);
     } else if (z.frame_rate != 0) {
         z.last = now;
     }
     return z.frame_rate;
 }
-// the wheel's rate added to the game's own (the stick's, or the mouse's), within the stick's range (a full stick
-// and the wheel zoom no faster than the full stick); a larger rate of the mouse's own stays as it is
+// the wheel's rate added to the game's own (the stick's, or the mouse's): a full stick and the wheel the same way zoom
+// no faster than the larger of the two (the stick's range, or the wheel's own step)
 inline double combine(double game, float wheel) {
     if (wheel == 0) return game;
-    const double lim = std::max(1.0, std::fabs(game));
+    const double lim = std::max({1.0, std::fabs(game), (double)std::fabs(wheel)});
     return std::clamp(game + wheel, -lim, lim);
 }
 

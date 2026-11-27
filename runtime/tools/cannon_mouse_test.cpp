@@ -31,7 +31,7 @@ bool mouse_camera(){return enabled;} bool mouse_captured(){return captured;}
 float mouse_sensitivity(){return sensitivity;}
 float mouse_first_person_scale(){return fp_scale;}
 bool direct_camera(){return false;} bool direct_boat_speed(){return false;}
-float camera_speed(){return 1;} int wheel_mode=2; int mouse_wheel_mode(){return wheel_mode;}
+float camera_speed(){return 1;} int wheel_mode=2; int mouse_wheel_mode(){return wheel_mode;} int wheel_smooth=2; int wheel_zoom_smoothing(){return wheel_smooth;}
 uint64_t step(){return clock_step;} double game_time(){return double(clock_step)/30;}
 bool trace_on(){return false;} void trace(const char*,...){}
 void link_executed(uint32_t){} void lock_on_filter_pad(input::PadState&){} void leaf_filter_pad(input::PadState&){}
@@ -268,8 +268,9 @@ int main(){
         // Off: never held
         assert(run(kOff,true,true,kL|kZL,kL|kZL,1,false,90)==(kL|kZL)&&!s.held);
     }
-    // Mouse wheel: Zoom (issue #696, mouse_wheel.h): a notch is manualCamera's full vertical rate f28 (+1: closer) for
-    // kStepsPerNotch steps, in either Right stick up/down choice; first person and the other modes never take it
+    // Mouse wheel: Zoom (issue #696, mouse_wheel.h): a notch is kStepsPerNotch steps of manualCamera's full vertical
+    // rate f28 (+1: closer), given at once (Wheel zoom smoothing Off) or eased out, in either Right stick up/down
+    // choice; first person and the other modes never take it
     {
         using namespace mouse_wheel;
         procedure(0x0,false);clock_step+=20;
@@ -280,33 +281,41 @@ int main(){
         // Bindings (the default): the camera gets nothing, nothing waits
         assert(kDefault==kBindings&&owns_wheel(kFirstPerson)&&owns_wheel(kZoom)&&!owns_wheel(kBindings));
         mods::wheel_mode=kBindings;wheel(1);assert(rate(0)==0&&rate(.5)==.5);
-        // Zoom: wheel up, 4 steps of the full rate, then the stick's own again
-        mods::wheel_mode=kZoom;wheel(1);
-        for(int i=0;i<4;++i) assert(rate(0)==1);
-        assert(rate(0)==0&&rate(-.3)==-.3);
-        wheel(-1);for(int i=0;i<4;++i) assert(rate(0)==-1);  // wheel down: further
-        assert(rate(0)==0);
-        // with the stick: the sum within the stick's range (no faster than the full stick); a larger mouse rate stays
-        wheel(1);assert(rate(.5)==1&&rate(-.5)==.5&&rate(1)==1);assert(rate(-3)==-2);assert(rate(0)==0);
+        // Zoom, smoothing Off: a notch's 4 steps of the full rate at once, then the stick's own again
+        mods::wheel_mode=kZoom;mods::wheel_smooth=kSmoothOff;
+        wheel(1);assert(rate(0)==4&&rate(0)==0&&rate(-.3)==-.3);
+        wheel(-1);assert(rate(0)==-4&&rate(0)==0);  // wheel down: further
+        // with the stick: the larger of the two (the stick's range, the wheel's step) the same way, the sum against it
+        wheel(1);assert(rate(.5)==4);wheel(1);assert(rate(-1)==3);wheel(-1);assert(rate(-3)==-4);assert(rate(0)==0);
         // a trackpad's fractions: their share of a notch (0.1 notch: 0.4 steps of the full rate)
         wheel(.1f);assert(std::fabs(rate(0)-.4)<1e-6&&rate(0)==0);
-        wheel(.5f);assert(rate(0)==1&&std::fabs(rate(0)-1)<1e-6&&rate(0)==0);
-        // turning the other way stops the zoom first; a fast scroll waits 4 notches at most
-        wheel(2);assert(rate(0)==1);wheel(-1);for(int i=0;i<4;++i) assert(rate(0)==-1);
-        assert(rate(0)==0);
-        wheel(10);int n=0;while(rate(0)!=0) ++n;assert(n==int(kMaxPending));
+        // a fast scroll waits 4 notches at most
+        wheel(10);assert(rate(0)==kMaxPending&&rate(0)==0);
+        // smoothing: an exponential ease-out over its catch-up time (95 % at 3 tau), the same total; the ends snap
+        assert(smooth_part(kSmoothOff)==1&&smooth_part(kSmoothCount)==1&&kSmoothDefault==2&&kSmoothSeconds[2]==.3f);
+        for(int i=1;i<kSmoothCount;++i) assert(smooth_part(i)>0&&smooth_part(i)<1&&(i==1||smooth_part(i)<smooth_part(i-1)));
+        for(int ch:{1,2,3,4}){
+            mods::wheel_smooth=ch;wheel(1);
+            const double part=smooth_part(ch);double sum=0,first=0;int n=0,at95=-1;
+            for(double r;(r=rate(0))!=0;++n){if(!n) first=r;assert(r>0&&r<=first+1e-9);sum+=r;if(at95<0&&sum>=.95*4) at95=n+1;}
+            assert(std::fabs(first-4*part)<1e-5&&std::fabs(sum-4)<1e-4);
+            const int steps95=int(std::lround(kSmoothSeconds[ch]*30));  // the catch-up time in 30 Hz steps
+            assert(std::abs(at95-steps95)<=1&&n<=steps95*2+2);
+        }
+        // turning the other way stops what waits first
+        mods::wheel_smooth=2;wheel(2);assert(rate(0)>0);wheel(-1);assert(rate(0)<0);while(rate(0)!=0){}
         // Look up and down: the wheel's rate stays in f28 (the game's zoom, with its latitude part); the stick's own
         // rate goes into the latitude only, added to the game's delta
-        look_pitch=true;
-        wheel(1);assert(rate(.7)==1&&close((float)lat(-1*3.5),-3.5f-2.45f));
-        assert(rate(0)==1&&close((float)lat(-1*3.5),-3.5f));  // the wheel alone: the game's zoom as it is
-        assert(rate(.7)==1&&close((float)lat(-3.5),-5.95f)&&rate(-1)==1&&close((float)lat(-3.5),0));
+        mods::wheel_smooth=kSmoothOff;look_pitch=true;
+        wheel(1);assert(rate(.7)==4&&close((float)lat(-4*3.5),-14.f-2.45f));
+        wheel(.25f);assert(rate(0)==1&&close((float)lat(-1*3.5),-3.5f));  // the wheel alone: the game's zoom as it is
         assert(rate(.7)==0&&close((float)lat(-0.0),-2.45f));  // over: Look up and down as before
-        zoom_held=true;wheel(1);assert(rate(.5)==1);zoom_held=false;  // Zoom while holding: the sum, as with Zoom
-        while(rate(0)!=0){}
+        zoom_held=true;wheel(1);assert(rate(.5)==4);zoom_held=false;  // Zoom while holding: as with Zoom
         look_pitch=false;
         // nobody takes it (no manualCamera): dropped after kDropSteps steps, it does not zoom later
         wheel(1);clock_step+=kDropSteps+1;wheel(0);assert(rate(0)==0);
+        mods::wheel_smooth=4;wheel(1);assert(rate(0)>0);clock_step+=kDropSteps+1;wheel(0);assert(rate(0)==0);  // an ease too
+        mods::wheel_smooth=kSmoothOff;
         // first person (the subject camera ran) and item aims: the wheel zooms nothing, also after
         c.r[3]=kLinkBase;hook_025071FC(&c);wheel(1);assert(rate(0)==0);
         clock_step+=10;procedure(0x94,false);wheel(1);procedure(0x0,false);assert(rate(0)==0);
@@ -331,14 +340,14 @@ int main(){
         mods::wheel_mode=kFirstPerson;clock_step+=20;
         mods::mouse_wheel(1);input::PadState fp;mods::filter_pad(fp);assert(fp.buttons&input::kStickR);
         assert(rate(0)==0);
-        mods::wheel_mode=kBindings;
+        mods::wheel_mode=kBindings;mods::wheel_smooth=kSmoothDefault;
         // the pure rules: the old switch, frame_rate for true 60 (each step of a frame: the frame's rate)
         assert(from_switch(kZoom,false)==kZoom&&from_switch(kFirstPerson,false)==kBindings&&from_switch(kBindings,true)==kFirstPerson);
         Zoom z;add(z,1,1);
-        assert(frame_rate(z,7,1)==1&&frame_rate(z,7,1)==1&&z.pending==3);  // frame 7: two steps, one frame's rate
-        assert(frame_rate(z,8,2)==1&&z.pending==2);
-        add(z,-0.0f,3);add(z,NAN,3);assert(z.pending==2);  // nothing
-        drop_stale(z,2+kDropSteps);assert(z.pending==2);drop_stale(z,3+kDropSteps);assert(z.pending==0&&!wants(z));
+        assert(frame_rate(z,7,1,.25f)==1&&frame_rate(z,7,1,.25f)==1&&z.pending==3);  // frame 7: two steps, one frame's rate
+        assert(frame_rate(z,8,2,.25f)==.75f&&z.pending==2.25f);
+        add(z,-0.0f,3);add(z,NAN,3);assert(z.pending==2.25f);  // nothing
+        drop_stale(z,2+kDropSteps);assert(z.pending==2.25f);drop_stale(z,3+kDropSteps);assert(z.pending==0&&!wants(z));
         add(z,.25f,10);assert(frame_rate(z,9,10)==1&&z.pending==0&&wants(z));  // the frame's other steps still zoom
         assert(frame_rate(z,9,10)==1&&frame_rate(z,10,11)==0&&!wants(z));   // the next frame: over
     }
@@ -382,7 +391,7 @@ int main(){
     puts("Cannon mouse: routing, gyro exclusion, priority, sensitivity, repeated reads and mode transitions PASS");
     puts("Look up and down: the vertical rate goes to the latitude alone, once per manualCamera run, off by default PASS");
     puts("Zoom while holding: the original zoom while held, L's tap on release, ZL and Off, Zoom (original) unchanged PASS");
-    puts("Mouse wheel: Zoom: a notch = 4 steps of the full rate, fractions, both stick choices, wake, hold, dropped zoom PASS");
+    puts("Mouse wheel: Zoom: a notch = 4 steps of the full rate, smoothing, fractions, both stick choices, wake, hold, dropped zoom PASS");
     puts("First-person mouse look: degrees per view, once per step, ease, inversion, stale movement, mouse camera off PASS");
     puts("First-person mouse look: later reads of a step keep their movement, First-person sensitivity, 1 degree per point PASS");
 }

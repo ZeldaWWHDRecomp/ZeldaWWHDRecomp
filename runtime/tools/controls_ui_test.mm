@@ -36,6 +36,9 @@ bool aimLeft = false;
 bool aim_left_stick() { return aimLeft; }
 int wheelMode = 2;  // Bindings, the default (mouse_wheel.h)
 int mouse_wheel_mode() { return wheelMode; }
+int wheelSmooth = 2;  // 0.3 s, the default
+int wheel_zoom_smoothing() { return wheelSmooth; }
+void set_wheel_zoom_smoothing(int c) { wheelSmooth = c; }
 void set_aim_left_stick(bool left) { aimLeft = left; }
 }
 namespace game_settings {
@@ -210,16 +213,23 @@ int main() {
         }
         // #696: Mouse wheel, Bindings by default (the old First-person shortcut switch's off); a locked switch stays
         assert(g_controls.mouseWheel.numberOfItems==3 && g_controls.mouseWheel.indexOfSelectedItem==2);
+        // Wheel zoom smoothing: 0.3 s by default, only active with Zoom
+        assert(g_controls.wheelSmoothing.numberOfItems==5 && g_controls.wheelSmoothing.indexOfSelectedItem==2 &&
+               !g_controls.wheelSmoothing.enabled && [[g_controls.wheelSmoothing itemTitleAtIndex:0] isEqualToString:@"Off"]);
         assert([[g_controls.mouseWheel itemTitleAtIndex:0] isEqualToString:@"First person"] &&
                [[g_controls.mouseWheel itemTitleAtIndex:1] isEqualToString:@"Zoom"]);
         [g_controls.mouseWheel selectItemAtIndex:1];[g_controls mouseWheelChanged:g_controls.mouseWheel];
-        assert(mods::wheelMode==1);
+        assert(mods::wheelMode==1 && g_controls.wheelSmoothing.enabled);
+        [g_controls.wheelSmoothing selectItemAtIndex:0];[g_controls wheelSmoothingChanged:g_controls.wheelSmoothing];
+        assert(mods::wheelSmooth==0);
+        mods::wheelSmooth=4;[g_controls syncOptions];assert(g_controls.wheelSmoothing.indexOfSelectedItem==4);
+        mods::wheelSmooth=2;[g_controls syncOptions];
         mods::manager::wheelLocked=true;
         [g_controls.mouseWheel selectItemAtIndex:0];[g_controls mouseWheelChanged:g_controls.mouseWheel];
         assert(mods::wheelMode==1 && g_controls.mouseWheel.indexOfSelectedItem==1);
         mods::manager::wheelLocked=false;
         mods::wheelMode=0;[g_controls syncOptions];assert(g_controls.mouseWheel.indexOfSelectedItem==0);
-        mods::wheelMode=2;[g_controls syncOptions];assert(g_controls.mouseWheel.indexOfSelectedItem==2);
+        mods::wheelMode=2;[g_controls syncOptions];assert(g_controls.mouseWheel.indexOfSelectedItem==2 && !g_controls.wheelSmoothing.enabled);
         g_controls.cameraSpeed.floatValue=1.75f;
         [g_controls cameraSpeedChanged:g_controls.cameraSpeed];
         g_controls.mouseSensitivity.floatValue=.25f;
