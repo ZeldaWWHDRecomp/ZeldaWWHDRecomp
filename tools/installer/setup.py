@@ -806,7 +806,11 @@ def download(url, dst, sha256, size_hint, label, attempts=DOWNLOAD_ATTEMPTS, wai
                 mode = "ab" if resumed else "wb"
                 done = have if resumed else 0
                 length = int(r.headers.get("Content-Length") or 0)
-                total = (done + length) if length else int(size_hint or 0)
+                # the size the server announces; else size_hint, the release's estimate, for the progress bar only:
+                # GitHub's source archives come without Content-Length and differ from the estimate (issue #678),
+                # and the SHA-256 (or the caller's own check) decides whether the download is complete
+                expected = (done + length) if length else 0
+                total = expected or int(size_hint or 0)
                 with open(tmp, mode) as f:
                     while True:
                         chunk = r.read(1 << 20)
@@ -814,9 +818,9 @@ def download(url, dst, sha256, size_hint, label, attempts=DOWNLOAD_ATTEMPTS, wai
                             break
                         f.write(chunk)
                         done += len(chunk)
-                        pr.update(done, total or done, human(done))
-                if total and done < total:
-                    raise OSError("the connection closed after %s of %s" % (human(done), human(total)))
+                        pr.update(done, max(total, done), human(done))
+                if expected and done < expected:
+                    raise OSError("the connection closed after %s of %s" % (human(done), human(expected)))
             break
         except OSError as e:  # urllib's errors, timeouts and resets are all OSErrors
             last = e

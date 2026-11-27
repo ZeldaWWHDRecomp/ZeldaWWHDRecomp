@@ -441,7 +441,10 @@ def decomp_source_pin(ddir):
     """The decompilation's source as setup downloads it: {"revision", "tree_sha256", "url", "download_bytes"} and the
     number of its files (the Android runtime SDK uses it too: tools/android/package_runtime.py)"""
     # the decompilation's source: its commit and the SHA-256 of the files setup downloads (decomp_setup.py
-    # SOURCE_PATHS as git tracks them), from a temporary copy; not shipped
+    # SOURCE_PATHS as git tracks them), from a temporary copy; not shipped. The copy is made the way setup makes its own:
+    # a git archive of the commit, unpacked by decomp_setup.unpack_source. Not from the working tree: a Windows checkout
+    # has CRLF line endings, GitHub's archive LF, and v0.5.2/v0.5.3's Windows pin was the CRLF hash (issue #678).
+    # (core.autocrlf off: git archive applies it too, which GitHub's archive does not)
     sys.path.insert(0, os.path.join(ROOT, "tools", "installer"))
     import decomp_setup
     paths = decomp_setup.SOURCE_PATHS
@@ -452,16 +455,17 @@ def decomp_source_pin(ddir):
         sys.exit("--decomp-build: %s is not a clean checkout of the decompilation" % ddir)
     # (in the system's temporary folder: a file browser showing the output folder writes .DS_Store files into new
     # folders, which tree_digest leaves out but which made removing a copy there fail)
+    rev = subprocess.run(["git", "-C", ddir, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    git_archive = ["git", "-c", "core.autocrlf=false", "-C", ddir, "archive", "--prefix=wwhd-%s/" % rev]
     tmp = tempfile.mkdtemp(prefix="wwhd-decomp-tree-")
     tree = os.path.join(tmp, "tree")
-    for rel in tracked:
-        copy(os.path.join(ddir, rel), os.path.join(tree, rel))
+    with open(os.path.join(tmp, "src.tar"), "wb") as f:
+        subprocess.run(git_archive + ["--format=tar", rev, "--"] + paths, stdout=f, check=True)
+    decomp_setup.unpack_source(os.path.join(tmp, "src.tar"), tree)
     digest = decomp_setup.tree_digest(tree)
     shutil.rmtree(tmp, ignore_errors=True)
-    rev = subprocess.run(["git", "-C", ddir, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
-    # about the size of GitHub's archive of the commit (shown before setup downloads it)
-    size = len(subprocess.run(["git", "-C", ddir, "archive", "--format=tar.gz", "HEAD"], capture_output=True,
-                              check=True).stdout)
+    # about the size of GitHub's archive of the commit (shown before setup downloads it; an estimate, setup.download)
+    size = len(subprocess.run(git_archive + ["--format=tar.gz", rev], capture_output=True, check=True).stdout)
     return {"revision": rev, "tree_sha256": digest, "url": decomp_setup.ARCHIVE_URL % rev, "download_bytes": size}, len(tracked)
 
 

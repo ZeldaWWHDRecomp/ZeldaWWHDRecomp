@@ -1864,6 +1864,19 @@ class Download(unittest.TestCase):
                 self.assertEqual(f.read(), self.DATA)
             self.assertEqual(calls, [None, "bytes=300000-"])
 
+    def test_size_hint_without_content_length_is_only_an_estimate(self):
+        # GitHub's source archives come without Content-Length, and the release's size estimate differs (issue #678):
+        # a complete download that is smaller or larger than the hint is kept, the SHA-256 decides
+        for hint in (len(self.DATA) + 100000, len(self.DATA) - 100000):
+            def urlopen(req, timeout=None):
+                r = self.Response(self.DATA, 200)
+                r.headers = {}
+                return r
+            with tempfile.TemporaryDirectory() as d, mock.patch.object(setup.urllib.request, "urlopen", urlopen),                     mock.patch.object(setup, "PKG", d), mock.patch.object(setup, "HERE", d):
+                dst = os.path.join(d, "src.tar.gz")
+                setup.download("https://example.invalid/src.tar.gz", dst, self.SHA, hint, "test", attempts=1, wait=0)
+                self.assertEqual(setup.file_sha256(dst), self.SHA)
+
     def test_gives_up_with_hint(self):
         def urlopen(req, timeout=None):
             raise setup.urllib.error.URLError("timed out")

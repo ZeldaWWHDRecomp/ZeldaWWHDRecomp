@@ -1,6 +1,7 @@
 """Exercise the real SDK payload with the unchanged release guard; no game files."""
 from pathlib import Path
 import ast
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -137,6 +138,31 @@ class DecompBuildPackaging(unittest.TestCase):
                                                      "tools_decomp_build_hooks_none.cpp.obj"))
         for rel in package.DECOMP_TOOLS:
             self.assertTrue((Path(package.ROOT) / rel).is_file(), rel)
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_source_pin_is_the_archives_hash_in_a_crlf_checkout(self):
+        # the pin is the hash of what setup unpacks from GitHub's archive (LF), also when the checkout has CRLF line
+        # endings (Windows, core.autocrlf): v0.5.2/v0.5.3's Windows pin was the CRLF hash (issue #678)
+        sys.path.insert(0, str(Path(package.ROOT) / "tools" / "installer"))
+        import decomp_setup
+        files = {"wwhd_src/d/a.cpp": b"int a;\n// \xe3\x81\x82\n", "tools/verify/v.py": b"x = 1\n",
+                 "LICENSE": b"license\n", "README.md": b"readme\n"}
+        with tempfile.TemporaryDirectory() as tmp:
+            src, ddir = Path(tmp) / "src", Path(tmp) / "checkout"
+            for rel, data in dict(files, **{"other/b.txt": b"not downloaded\n"}).items():
+                (src / rel).parent.mkdir(parents=True, exist_ok=True)
+                (src / rel).write_bytes(data)
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "core.autocrlf=false"]
+            subprocess.run(git + ["init", "-q", str(src)], check=True)
+            subprocess.run(git + ["-C", str(src), "add", "-A"], check=True)
+            subprocess.run(git + ["-C", str(src), "commit", "-q", "-m", "x"], check=True)
+            subprocess.run(["git", "-c", "core.autocrlf=true", "clone", "-q", "-c", "core.autocrlf=true", str(src),
+                            str(ddir)], check=True)
+            self.assertEqual((ddir / "README.md").read_bytes(), b"readme\r\n")  # the CRLF checkout
+            pin, count = package.decomp_source_pin(str(ddir))
+            want = decomp_setup.digest_entries([(rel, hashlib.sha256(data).hexdigest()) for rel, data in files.items()])
+            self.assertEqual(pin["tree_sha256"], want)
+            self.assertEqual(count, len(files))
 
 if __name__ == "__main__":
     unittest.main()
