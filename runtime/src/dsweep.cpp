@@ -41,6 +41,7 @@
 // (one more instance of a room model, made and drawn as daBg does; see room_test).
 // With WWHD_VK_KEY_LOG the Vulkan renderer writes the batch number next to every pipeline it creates.
 #include "dsweep.h"
+#include "dsweep_archives.h"
 #include "dsweep_scene.h"
 #include <algorithm>
 #include <atomic>
@@ -332,13 +333,34 @@ bool skipped(const std::string& archive, const std::string& name) {
 }
 
 // dRes_info_c of an object archive (HD layout, d_resorce.h ResourceArchiveInfoHD): name +0x1C, archive +0x5C,
-// mRes +0x60, count +0x84. The resource control (*101F4F28) keeps them in a pool of 128 nodes (+0x28, 0x20 each,
-// the info at node+0x18).
+// mRes +0x60, count +0x84. The resource control (*101F4F28) keeps them in a tree (root +0x14) whose 128 nodes are
+// stored at +0x28 (0x20 each, the info at node+0x18). The archives it holds are the tree's nodes, not every node of
+// the storage: a released archive's node keeps its info (dsweep_archives.h, #703; WWHD_DSWEEP_ARCHIVE_SLOTS=1: the
+// storage, as before)
+bool archive_slots_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("WWHD_DSWEEP_ARCHIVE_SLOTS");
+        return e && !std::strcmp(e, "1");
+    }();
+    return on;
+}
+std::vector<uint32_t> archive_tree_infos() {
+    std::vector<uint32_t> out;
+    const uint32_t control = ld32(GD(0x101F4F28));
+    if (mem2(control, 0x28 + dsweep_archives::kNodes * dsweep_archives::kNodeSize))
+        dsweep_archives::tree_values(
+            ld32(control + 0x14), [](uint32_t a) { return ld32(a); },
+            [](uint32_t a) { return mem2(a, dsweep_archives::kNodeSize); }, out);
+    return out;
+}
 std::vector<uint32_t> archive_infos() {
     std::vector<uint32_t> out;
     const uint32_t control = ld32(GD(0x101F4F28));
-    for (unsigned i = 0; i < 128 && mem2(control); ++i) {
-        const uint32_t info = ld32(control + 0x28 + i * 0x20 + 0x18);
+    const auto infos = !archive_slots_on() ? archive_tree_infos()
+                       : mem2(control, 0x28 + dsweep_archives::kNodes * dsweep_archives::kNodeSize)
+                           ? dsweep_archives::storage_values(control + 0x28, [](uint32_t a) { return ld32(a); })
+                           : std::vector<uint32_t>{};
+    for (const uint32_t info : infos) {
         if (!mem2(info, 0x8C) || std::find(out.begin(), out.end(), info) != out.end()) continue;
         const uint32_t archive = ld32(info + 0x5C), res = ld32(info + 0x60);
         const int32_t count = int32_t(ld32(info + 0x84));
@@ -523,7 +545,15 @@ void harvest(Cpu* c, const Entry& e) {
 
 uint32_t find_info(const std::string& name) {
     for (uint32_t info : archive_infos())
-        if (cstring(info + 0x1C) == name) return info;
+        if (cstring(info + 0x1C) == name) {
+            if (debug_on() && archive_slots_on()) {
+                const auto live = archive_tree_infos();
+                if (std::find(live.begin(), live.end(), info) == live.end())
+                    LOG("[dsweep] archive %s: info %08X is a released node (step %llu)", name.c_str(), info,
+                        (unsigned long long)interp::executed_steps());
+            }
+            return info;
+        }
     return 0;
 }
 
@@ -616,6 +646,30 @@ void draw_room_model(Cpu* c, Model& m, uint32_t host) {
     (void)host;
 }
 
+// debug (WWHD_DSWEEP_DEBUG): the model's shader frames (J3DModel +0xAC model data: +0x24 program count, +0x28
+// programs of 0x1DC bytes, +0x1D8 the frame record; frame +0 shader program, shader +0x7C its state): one without
+// a state is what submitShape reads 0x28 from (#703)
+void check_frames(const Model& m, const char* when) {
+    if (!debug_on() || !mem2(m.model, 0xB0)) return;
+    const uint32_t data = ld32(m.model + 0xAC);
+    if (!mem2(data, 0x30)) return;
+    const uint32_t count = std::min<uint32_t>(ld32(data + 0x24), 4096), programs = ld32(data + 0x28);
+    if (!mem2(programs, count * 0x1DC)) return;
+    unsigned bad = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t frame = ld32(programs + i * 0x1DC + 0x1D8), shader = mem2(frame) ? ld32(frame) : 0;
+        const uint32_t state = mem2(shader, 0x80) ? ld32(shader + 0x7C) : 0;
+        if (frame && (!state || !mem2(state, 0x2C)) && bad++ < 4)
+            LOG("[dsweep] frames %s %s:%s step %llu: program %u frame %08X shader %08X state %08X (data %08X, direct %u)",
+                when, m.archive.c_str(), m.name.c_str(), (unsigned long long)interp::executed_steps(), i, frame,
+                shader, state, data, ld8(m.model + 0x88));
+    }
+    static std::set<std::string> said;
+    if (said.insert(m.archive + ":" + m.name).second && count)
+        LOG("[dsweep] frames %s %s:%s: %u programs, first frame %08X shader %08X, %u without a state", when,
+            m.archive.c_str(), m.name.c_str(), count, ld32(programs + 0x1D8),
+            mem2(ld32(programs + 0x1D8)) ? ld32(ld32(programs + 0x1D8)) : 0, bad);
+}
 void draw_model(Cpu* c, Model& m, uint32_t host) {
     if (m.failed || !g.heap || !g.scratch) return;
     if (m.model && std::find(std::begin(g.heaps), std::end(g.heaps), m.heap) == std::end(g.heaps)) m.model = 0;
@@ -665,6 +719,7 @@ void draw_model(Cpu* c, Model& m, uint32_t host) {
     // material animation slots of the model data (+0x38..+0x48), set by the owning actor for its own draw
     uint32_t animations[5];
     for (int i = 0; i < 5; ++i) animations[i] = ld32(m.data + 0x38 + i * 4), st32(m.data + 0x38 + i * 4, 0);
+    check_frames(m, "draw");
     const uint32_t opa = ld32(GD(0x104B4634)), xlu = ld32(GD(0x104B4638));
     call(c, GC(0x025E2DE0), {m.model, 0});  // mDoExt_modelUpdateDL
     st32(GD(0x104B4634), opa);
@@ -1482,6 +1537,21 @@ void check_pool() {
             LOG("[dsweep] pool step %llu (%s): - %s info %08X", (unsigned long long)step, g.archive.c_str(),
                 id.c_str(), info);
     last.swap(now);
+    {  // the object archives held (the archive tree) as they come and go
+        static std::map<uint32_t, std::string> held;
+        std::map<uint32_t, std::string> cur;
+        for (uint32_t info : archive_tree_infos())
+            if (mem2(info, 0x8C)) cur[info] = cstring(info + 0x1C);
+        for (const auto& [info, name] : cur)
+            if (!held.count(info) || held[info] != name)
+                LOG("[dsweep] archives step %llu (%s): + %s info %08X", (unsigned long long)step, g.archive.c_str(),
+                    name.c_str(), info);
+        for (const auto& [info, name] : held)
+            if (!cur.count(info) || cur[info] != name)
+                LOG("[dsweep] archives step %llu (%s): - %s info %08X", (unsigned long long)step, g.archive.c_str(),
+                    name.c_str(), info);
+        held.swap(cur);
+    }
     for (const auto& [id, info] : last)
         for (uint32_t off : {0xC0u, 0xC4u}) {
             const uint32_t h = ld32(info + off);
