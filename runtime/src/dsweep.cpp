@@ -63,6 +63,7 @@
 #include "mods/guest_heap_query.h"
 #include "pipeline_groups.h"
 #include "dsweep_title.h"
+#include "dsweep_actors.h"
 
 
 namespace dsweep {
@@ -166,6 +167,10 @@ bool scene_guard_on() {
     }();
     return on;
 }
+bool debug_on() {
+    static const bool on = std::getenv("WWHD_DSWEEP_DEBUG") != nullptr;
+    return on;
+}
 constexpr unsigned kSceneRetries = 3;  // an archive given up this often goes on through the next scene change
 
 struct State {
@@ -202,7 +207,15 @@ struct State {
     uint32_t actor_id = 0xFFFFFFFF, actor = 0;
     unsigned actor_frames = 0, actor_draws = 0, actors = 0, actor_failed = 0;
     std::vector<uint32_t> orphans;   // actors still being created when given up: deleted once they exist
-    std::set<uint32_t> host_actors;  // the title's own actors (drawn before the actor sweep; never deleted)
+    std::map<uint32_t, uint64_t> orphan_since;  // ... the step each was given up
+    std::set<uint32_t> host_actors;  // the title's own actors by process id (drawn before the actor sweep, or during a
+                                     // title scene change in it: dsweep_actors.h; never held still or deleted)
+    CreateWait creates;              // what the shown actor (or group) requested has come up (dsweep_actors.h)
+    uint32_t id_floor = 0xFFFFFFFF;  // the first process id of the shown actor (or group): from it on, what is not the
+                                     // title's is the sweep's, drawn or not (dsweep_actors.h)
+    std::map<uint32_t, uint32_t> made;   // process id -> actor: made since id_floor, not drawn yet (runs its logic)
+    std::map<uint32_t, uint32_t> dying;  // process id -> actor: deleted by the sweep, held still until it is gone
+    ActorRetries actor_retries;      // actors dropped for a title scene change, tried again after it
     std::map<uint32_t, uint32_t> ours;  // process id -> actor: the shown actor and what it made (drawn, not the title's)
     std::vector<std::pair<uint32_t, uint32_t>> frozen;  // actor, status bits added for one execute pass
     std::set<std::string> archives_before;
@@ -818,6 +831,92 @@ uint32_t actor_of(Cpu* c, uint32_t id) {
     st32(g.scratch + 0x9F0, id);
     return call(c, GC(0x025D5218), {GC(0x025E1234), g.scratch + 0x9F0});  // fopAcIt_Judge(fpcSch_JudgeByID, &id)
 }
+// the game's process create queue (g_fpcCtTg_Queue, node_list_class: head, tail, size): requests not created yet
+uint32_t creates_queued() { return ld32(GD(0x101F39A4) + 8); }
+// WWHD_DSWEEP_ACTOR_CHILDREN=0: an actor is shown without waiting for what it requested (before #697)
+bool wait_for_children() {
+    static const bool on = [] {
+        const char* e = std::getenv("WWHD_DSWEEP_ACTOR_CHILDREN");
+        return !(e && !std::strcmp(e, "0"));
+    }();
+    return on;
+}
+// the next process id (fpcBs_MakeOfId's process_id)
+uint32_t next_process_id() { return ld32(GD(0x101F390C)); }
+// the actors made since the shown actor was requested (process id >= id_floor) that are not the title's: the sweep's,
+// drawn or not (Bkm's feet never draw); deleted with it. Like the shown actor they run their logic until they draw
+// (then they are held still as "ours"). The actor list g_fopAcTg_Queue (node_list_class; nodes: prev, data, next,
+// then the tag's actor at +0xC)
+void claim_made(Cpu*) {
+    if (!wait_for_children() || g.id_floor == 0xFFFFFFFF) return;
+    const uint32_t queue = GD(0x101F3328);
+    uint32_t node = ld32(queue);
+    for (unsigned n = 0; mem2(node, 0x14) && n < 4096; node = ld32(node + 8), ++n) {
+        const uint32_t a = ld32(node + 0xC);
+        if (!mem2(a, 0x330)) continue;
+        const uint32_t process = ld32(a + 4);
+        if (process < g.id_floor || process == 0xFFFFFFFF || g.host_actors.count(process) || g.ours.count(process))
+            continue;
+        if (g.made.emplace(process, a).second && debug_on())
+            LOG("[dsweep] ours: process %08X actor %08X profile %04X (made, with %s)", process, a, ld16(a + 8),
+                g.spawn.id().c_str());
+    }
+}
+void add_orphan(uint32_t id) {
+    if (std::find(g.orphans.begin(), g.orphans.end(), id) == g.orphans.end()) g.orphans.push_back(id);
+    g.orphan_since.emplace(id, interp::executed_steps());
+}
+// An orphan is deleted once it exists. One still being created after kOrphanWait steps waits for something the title
+// does not have (the auction's people for their manager, Auc0-7): its create is aborted (fpcM_Delete; a title scene
+// change waits for the creates of its layer, so the idle intro never ended while one stayed). Not at once: an actor
+// deleted while its resources load stops the game (d_com_inf_game.cpp "i_phase->id != 1", MknjD).
+constexpr uint64_t kOrphanWait = 90;
+void tend_orphans(Cpu* c) {
+    const uint64_t now = interp::executed_steps();
+    for (size_t i = 0; i < g.orphans.size();) {
+        const uint32_t id = g.orphans[i];
+        const bool creating = call(c, GC(0x025DD868), {id});  // fpcM_IsCreating
+        const auto since = g.orphan_since.find(id);
+        const bool waited = since == g.orphan_since.end() || now - since->second >= kOrphanWait;
+        bool gone = false;
+        if (creating && wait_for_children() && !waited) {
+        } else if (const uint32_t a = actor_of(c, id)) {
+            if (creating && debug_on())
+                LOG("[dsweep] orphan %08X (profile %04X) still being created after %llu steps: aborted", id,
+                    ld16(a + 8), (unsigned long long)(since == g.orphan_since.end() ? 0 : now - since->second));
+            call(c, GC(0x025DF944), {a});  // fpcM_Delete
+            if (wait_for_children() && !creating) g.dying.emplace(id, a);
+            gone = true;
+        } else if (!creating) {
+            gone = true;
+        }
+        if (gone) {
+            g.orphans.erase(g.orphans.begin() + long(i));
+            g.orphan_since.erase(id);
+        } else {
+            ++i;
+        }
+    }
+}
+// the shown actor and what it made (those still alive): deleted, and held still until they are gone (a deleted
+// actor executes until its delete completes: Bkm's hands then find no boss)
+void delete_ours(Cpu* c) {
+    for (const auto& [id, a] : g.made) g.ours.emplace(id, a);
+    g.made.clear();
+    for (const auto& [id, a] : g.ours)
+        if (actor_of(c, id) == a) {
+            // (an actor is in the actor list from its create's start: one still being created is deleted once it
+            // exists; its delete during its resource load stops the game: d_com_inf_game.cpp "i_phase->id != 1")
+            if (wait_for_children() && call(c, GC(0x025DD868), {id})) {  // fpcM_IsCreating
+                add_orphan(id);
+                continue;
+            }
+            call(c, GC(0x025DF944), {a});  // fpcM_Delete
+            if (wait_for_children()) g.dying.emplace(id, a);
+        }
+    g.ours.clear();
+    g.id_floor = 0xFFFFFFFF;
+}
 // The environment sweep (WWHD_DSWEEP_ENV=1, after the archives): the title's sea, sky, clouds, fog and screen
 // passes at other times of day and in a storm, set with the game's own environment setters (the save's time of
 // day, dKy_change_colpat, dKyw_rain_set, the thunder mode as daVrbox's storm sets them), each held for a while,
@@ -996,6 +1095,8 @@ void visit_step(const std::string& current) {
     const uint32_t next = GD(0x1046F0B0) + 0x5140;  // dStage_nextStage_c: name[8], point, room, layer, enabled, wipe
     if (!g_visit_asked) {
         if (ld8(next + 12)) return;  // a stage change is in progress
+        // the title's own scene change (its idle intro, dsweep_scene.h): the visit starts from the title after it
+        if (current == "sea_T" && scene_guard_on() && g_scene.hold(now)) return;
         progress("visit " + v.id());
         for (int i = 0; i < 8; ++i) st8(next + i, i < int(v.stage.size()) ? uint8_t(v.stage[i]) : 0);
         st16(next + 8, uint16_t(v.point));
@@ -1211,15 +1312,8 @@ void begin_actors(Cpu* c) {
 }
 void actor_group_step(Cpu* c);
 void actor_step(Cpu* c) {
-    // orphans: actors given up while being created, deleted once they exist
-    for (size_t i = 0; i < g.orphans.size();) {
-        if (const uint32_t a = actor_of(c, g.orphans[i])) {
-            call(c, GC(0x025DF944), {a});  // fpcM_Delete
-            g.orphans.erase(g.orphans.begin() + long(i));
-        } else if (!call(c, GC(0x025DD868), {g.orphans[i]})) {  // fpcM_IsCreating: gone
-            g.orphans.erase(g.orphans.begin() + long(i));
-        } else ++i;
-    }
+    // orphans: actors given up while being created, deleted once they exist (or aborted)
+    tend_orphans(c);
     if (actor_groups().size > 1) return actor_group_step(c);
     if (g.actor_id == 0xFFFFFFFF) {
         if (g.spawns.empty()) {
@@ -1238,6 +1332,8 @@ void actor_step(Cpu* c) {
         st16(angle, uint16_t(g.spawn.ax));
         st16(angle + 2, 0);
         st16(angle + 4, uint16_t(g.spawn.az));
+        g.creates.start(creates_queued());
+        g.id_floor = next_process_id();
         g.actor_id = call(c, GC(0x025D5834), {uint32_t(int32_t(int16_t(g.spawn.proc))), g.spawn.params, pos, 0, angle, 0,
                                               uint32_t(int32_t(g.spawn.arg)), 0});  // fopAcM_create
         g.actor = 0;
@@ -1264,13 +1360,17 @@ void actor_step(Cpu* c) {
         }
     }
     const bool creating = !g.actor && g.actor_id != 0xFFFFFFFF && call(c, GC(0x025DD868), {g.actor_id});
-    const bool shown = g.actor && (g.actor_draws >= kShowDraws || g.actor_frames >= kShowFrames);
+    // (its own create, if it is still under way, is not what it requested: Auc0-7 wait for good)
+    const bool self_creating = g.actor_id != 0xFFFFFFFF && call(c, GC(0x025DD868), {g.actor_id});
+    g.creates.frame(creates_queued() - (self_creating && creates_queued() ? 1u : 0u));
+    // and what it requested has come up and drawn (dsweep_actors.h: Bkm's hands)
+    const bool shown = g.actor && (g.actor_draws >= kShowDraws || g.actor_frames >= kShowFrames) &&
+                       (!wait_for_children() || g.creates.settled());
     if (!shown && (creating || g.actor) && g.actor_frames < kCreateFrames) return;
     // the actor and the actors it made (those still alive)
-    for (const auto& [id, a] : g.ours)
-        if (actor_of(c, id) == a) call(c, GC(0x025DF944), {a});  // fpcM_Delete
-    g.ours.clear();
-    if (creating) g.orphans.push_back(g.actor_id);
+    claim_made(c);
+    delete_ours(c);
+    if (creating) add_orphan(g.actor_id);
     if (!g.actor) ++g.actor_failed;
     progress("actor-done " + g.spawn.id());
     g.done.insert(g.spawn.id());
@@ -1297,6 +1397,8 @@ void actor_group_step(Cpu* c) {
         for (const auto& m : g_group) progress("actor " + m.spawn.id());
         g.archives_before = archive_names();
         g_group_archives.clear();
+        g.creates.start(creates_queued());
+        g.id_floor = next_process_id();
         const uint32_t camera = call(c, GC(0x024F8044));
         const uint32_t pos = g.scratch + 0x9C0, angle = g.scratch + 0x9D0;
         const float radius = g_group.size() > 1 ? actor_groups().radius : 0.f;
@@ -1332,19 +1434,26 @@ void actor_group_step(Cpu* c) {
         if (!g.archives_before.count(name) && groups.size() < 8) groups.push_back(pipeline_groups::group_of(name.data(), name.size()));
     if (groups != g_group_archives) g_group_archives = groups, pipeline_groups::set_sweeping(groups);
     std::vector<bool> creating(g_group.size());
+    uint32_t members_creating = 0;
+    for (const Member& m : g_group)
+        if (m.id != 0xFFFFFFFF && call(c, GC(0x025DD868), {m.id})) ++members_creating;
+    g.creates.frame(creates_queued() - std::min(members_creating, creates_queued()));
+    bool any_shown = false;
     for (size_t j = 0; j < g_group.size(); ++j) {
         const Member& m = g_group[j];
         creating[j] = !m.actor && m.id != 0xFFFFFFFF && call(c, GC(0x025DD868), {m.id});
         const bool shown = m.actor && (m.draws >= kShowDraws || m.frames >= kShowFrames);
         if (!shown && (creating[j] || m.actor) && m.frames < kCreateFrames) all = false;
+        if (shown && m.frames < kCreateFrames) any_shown = true;
     }
+    // and what they requested has come up and drawn (dsweep_actors.h); within kCreateFrames of the last one shown
+    if (all && any_shown && wait_for_children() && !g.creates.settled()) all = false;
     if (!all) return;
-    for (const auto& [id, a] : g.ours)
-        if (actor_of(c, id) == a) call(c, GC(0x025DF944), {a});  // fpcM_Delete
-    g.ours.clear();
+    claim_made(c);
+    delete_ours(c);
     for (size_t j = 0; j < g_group.size(); ++j) {
         const Member& m = g_group[j];
-        if (creating[j]) g.orphans.push_back(m.id);
+        if (creating[j]) add_orphan(m.id);
         if (!m.actor) ++g.actor_failed;
         progress("actor-done " + m.spawn.id());
         g.done.insert(m.spawn.id());
@@ -1388,10 +1497,47 @@ void check_pool() {
                     destroy);
         }
 }
+// the actor (or group) being shown, dropped for a title scene change (dsweep_actors.h): deleted with what it made,
+// and queued again (at most ActorRetries::kRetries times; then it counts as done)
+void drop_actors(Cpu* c) {
+    std::vector<std::pair<State::Spawn, uint32_t>> shown;  // spawn, process id
+    if (g.actor_id != 0xFFFFFFFF) shown.emplace_back(g.spawn, g.actor_id);
+    for (const Member& m : g_group)
+        if (m.id != 0xFFFFFFFF) shown.emplace_back(m.spawn, m.id);
+    if (shown.empty()) return;
+    claim_made(c);
+    std::set<uint32_t> deleted;
+    for (const auto* list : {&g.ours, &g.made})
+        for (const auto& [id, a] : *list) deleted.insert(id);
+    delete_ours(c);
+    for (auto it = shown.rbegin(); it != shown.rend(); ++it) {
+        const auto& [spawn, id] = *it;
+        if (deleted.count(id)) {
+        } else if (call(c, GC(0x025DD868), {id})) {
+            add_orphan(id);  // fpcM_IsCreating: deleted once it exists
+        } else if (const uint32_t a = actor_of(c, id)) {
+            call(c, GC(0x025DF944), {a});  // fpcM_Delete
+            g.dying.emplace(id, a);
+        }
+        if (g.actor_retries.again(spawn.id())) {
+            progress("retry " + spawn.id());
+            g.spawns.push_back(spawn);  // next, after the scene change
+        } else {
+            progress("actor-done " + spawn.id());
+            g.done.insert(spawn.id());
+        }
+    }
+    g.actor_id = 0xFFFFFFFF;
+    g.actor = 0;
+    g_group.clear();
+    g_tag = 0;
+    pipeline_groups::set_sweeping(0);
+}
 // A title scene change under way (dsweep_scene.h): no new archive, and the current one is given up: a stage resource
 // not requested yet goes back to the queue; one being swept goes to Draining, which releases it as usual and queues
-// it again (a load in progress completes first: it then goes the same way). True: this step does nothing else.
-bool scene_hold(uint64_t now) {
+// it again (a load in progress completes first: it then goes the same way). In the actor sweep no
+// actor is shown across it (drop_actors). True: this step does nothing else.
+bool scene_hold(Cpu* c, uint64_t now) {
     if (!scene_guard_on() || !config().title || !g_scene.hold(now)) return false;
     static uint64_t said = ~0ull;
     const auto note = [&](const char* what, bool archive) {
@@ -1420,6 +1566,24 @@ bool scene_hold(uint64_t now) {
         g_tag = 0;
         pipeline_groups::set_sweeping(0);
         return true;
+    case Phase::Plants:
+        return g_plant_frames == 0;  // (not begun: after it)
+    case Phase::Actors:
+        if (debug_on() && now % 60 == 0)
+            LOG("[dsweep] step %llu: held (orphans %zu, dying %zu, ours %zu, made %zu, create queue %u)",
+                (unsigned long long)now, g.orphans.size(), g.dying.size(), g.ours.size(), g.made.size(),
+                creates_queued());
+        tend_orphans(c);  // (the scene change waits for their creates)
+        // no actor is shown across it: the title's re-created actors are not the sweep's (dsweep_actors.h)
+        if (g.actor_id != 0xFFFFFFFF || !g_group.empty()) {
+            note(g.actor_id != 0xFFFFFFFF ? "the actor dropped, again after it:" : "the actors dropped, again after it",
+                 false);
+            if (g.actor_id != 0xFFFFFFFF) LOG("[dsweep]   %s", g.spawn.id().c_str());
+            drop_actors(c);
+        } else {
+            note("no new actor until it is back", false);
+        }
+        return true;
     default:
         return false;
     }
@@ -1427,7 +1591,7 @@ bool scene_hold(uint64_t now) {
 void step(Cpu* c, uint32_t host) {
     check_pool();
     flush_done(false);
-    if (scene_hold(interp::executed_steps())) return;
+    if (scene_hold(c, interp::executed_steps())) return;
     const uint32_t name = g.scratch + 0x780, phase = g.scratch + 0x7F0;
     switch (g.phase) {
     case Phase::Start:
@@ -1638,16 +1802,23 @@ void step(Cpu* c, uint32_t host) {
 // The actor sweep's actors draw, but never run their logic: around the game's execute pass (fpcEx_Handler) they
 // carry the status bits fopAc_Execute skips actors with (fopAc_ac_c::stopStatus, *101F3084); the draw pass runs
 // without them.
+// What the shown actor made since it was requested is claimed here (dsweep_actors.h), and what the sweep deleted stays
+// still until its delete completes.
 void before_execute(Cpu* c) {
-    if (g.phase != Phase::Actors || g.ours.empty()) return;
+    if (g.phase != Phase::Actors) return;
+    claim_made(c);
+    for (auto it = g.dying.begin(); it != g.dying.end();)
+        it = actor_of(c, it->first) == it->second ? std::next(it) : g.dying.erase(it);
+    if (g.ours.empty() && g.dying.empty()) return;
     const uint32_t stop = ld32(GD(0x101F3084));
     if (!stop) return;
-    for (const auto& [id, a] : g.ours)
-        if (actor_of(c, id) == a) {
-            const uint32_t status = ld32(a + 0x2E0);
-            g.frozen.emplace_back(a, stop & ~status);
-            st32(a + 0x2E0, status | stop);
-        }
+    for (const auto* list : {&g.ours, &g.dying})
+        for (const auto& [id, a] : *list)
+            if (actor_of(c, id) == a) {
+                const uint32_t status = ld32(a + 0x2E0);
+                g.frozen.emplace_back(a, stop & ~status);
+                st32(a + 0x2E0, status | stop);
+            }
 }
 void after_execute(Cpu*) {
     for (const auto& [a, bits] : g.frozen)
@@ -2067,14 +2238,47 @@ void after_actor_draw(Cpu* c, uint32_t actor) {
     if (g.actor && actor == g.actor) ++g.actor_draws;
     for (Member& m : g_group)
         if (m.actor == actor) ++m.draws;
-    if (cfg.title && g.phase != Phase::Actors) g.host_actors.insert(actor);
-    else if (g.phase == Phase::Actors && !g.host_actors.count(actor)) g.ours.emplace(ld32(actor + 4), actor);
+    // the title's own actors and the ones the sweep's actor made, by process id (dsweep_actors.h)
+    const uint32_t process = ld32(actor + 4);
+    const bool held = scene_guard_on() && g_scene.hold(now);
+    switch (classify_drawn(g.phase == Phase::Actors, cfg.title, held, g.host_actors.count(process) != 0)) {
+    case Drawn::Title:
+        if (g.host_actors.insert(process).second && g.phase == Phase::Actors && debug_on())
+            LOG("[dsweep] title's: process %08X actor %08X profile %04X (step %llu)", process, actor, ld16(actor + 8),
+                (unsigned long long)now);
+        break;
+    case Drawn::Ours:
+        g.made.erase(process);
+        if (g.ours.emplace(process, actor).second && debug_on())
+            LOG("[dsweep] ours: process %08X actor %08X profile %04X (with %s)", process, actor, ld16(actor + 8),
+                g.spawn.id().c_str());
+        break;
+    case Drawn::Neither:
+        break;
+    }
     // once per logic step, from the first actor drawn (the camera and the frame's draw lists are set up then)
     static uint64_t last = ~0ull;
     if (now == last) return;
     last = now;
     // the title's scene changes (dsweep_scene.h): its fade's overlap request (fopOvlpM, l_fopOvlpM_overlap)
-    if (cfg.title) g_scene.update(now, ld32(GD(0x101F36CC)) != 0);
+    if (cfg.title) {
+        const bool request = ld32(GD(0x101F36CC)) != 0;
+        static bool was = false;
+        if (request != was && debug_on())
+            LOG("[dsweep] step %llu: scene change request %s (phase %d)", (unsigned long long)now, request ? "up" : "down",
+                int(g.phase));
+        was = request;
+        g_scene.update(now, request);
+        if (debug_on()) {  // the next-stage request (dStage_nextStage_c enabled), whoever sets it
+            static int next_was = -1;
+            const int next = ld8(GD(0x1046F0B0) + 0x5140 + 12);
+            if (next != next_was)
+                LOG("[dsweep] step %llu: next stage %s \"%s\" (phase %d, %s)", (unsigned long long)now,
+                    next ? "requested" : "not requested", cstring(GD(0x1046F0B0) + 0x5140, 8).c_str(), int(g.phase),
+                    g.spawn.id().c_str());
+            next_was = next;
+        }
+    }
     // only in a settled stage (the title "sea_T" or a game stage, the same one for kSettle steps): the stage's light
     // and environment state, which the models' light setup reads, is ready then; the sweep pauses while a stage
     // changes (it never changes during a setup sweep from the title)
