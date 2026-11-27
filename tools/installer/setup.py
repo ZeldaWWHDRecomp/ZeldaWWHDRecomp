@@ -2185,6 +2185,21 @@ def stage_build(tc, manifest, objs, work, data_dir, placeholder=False):
     return staging
 
 
+def replace_retrying(src, dst, waits=(0.25, 0.5, 1, 1, 2, 2, 3, 4, 6, 8)):
+    """os.replace that waits and tries again while Windows still holds a file in src (issues #672, #674): the game
+    in bin.staging was just started once to check it, and right after it exits Windows (usually Defender scanning
+    the new program) can keep it open for a few seconds, so renaming the folder fails with "access denied" although
+    nothing runs. About 28 s in all; the last PermissionError is raised as before."""
+    for wait in waits:
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as e:
+            LOG.write("rename %s -> %s: %s; trying again in %s s" % (src, dst, e, wait))
+            time.sleep(wait)
+    os.replace(src, dst)
+
+
 def publish_build(staging, exe_dir, data_dir):
     """bin.staging becomes bin; the bin before it becomes bin.previous (the one previous build kept: an older
     bin.previous, made by an earlier setup, goes now that the new build is checked). Two renames; an
@@ -2195,18 +2210,20 @@ def publish_build(staging, exe_dir, data_dir):
             if os.path.lexists(previous):
                 if not os.path.isfile(os.path.join(previous, PREVIOUS_MARK)):
                     aside = previous + time.strftime(".%Y%m%d-%H%M%S")
-                    os.replace(previous, aside)  # not made by setup: kept, out of the way
+                    replace_retrying(previous, aside)  # not made by setup: kept, out of the way
                     say("  Kept %s (not made by setup)" % aside)
                 else:
                     shutil.rmtree(longpath(previous))
             st = read_state(data_dir)
-            os.replace(exe_dir, previous)
+            replace_retrying(exe_dir, previous)
             with open(os.path.join(previous, PREVIOUS_MARK), "w") as f:
                 json.dump({"version": st.get("version", "?"), "kept": time.strftime("%Y-%m-%d %H:%M:%S")}, f)
-        os.replace(staging, exe_dir)
+        replace_retrying(staging, exe_dir)
     except PermissionError as e:
         raise SetupError("the game folder %s is in use: close the game and run setup again (%s); the game before "
-                         "this update is unchanged" % (exe_dir, e))
+                         "this update is unchanged. If nothing is running, an antivirus may still be scanning the new "
+                         "game: exclude the game folder from it (for example Windows Defender) for a moment and run "
+                         "setup again" % (exe_dir, e))
     mark = os.path.join(exe_dir, STAGING_MARK)
     if os.path.isfile(mark):
         os.replace(mark, os.path.join(exe_dir, ".wwhd-build.json"))
