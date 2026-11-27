@@ -63,6 +63,8 @@ std::atomic<float> g_pip_opacity{1.0f};
 std::atomic<int> g_filter{kSmooth};
 std::atomic<bool> g_shown{true};
 std::atomic<bool> g_auto_pin{false};
+std::atomic<bool> g_auto_song_list{true};
+std::atomic<bool> g_auto_peek{false};
 std::atomic<double> g_auto_until{0};
 static std::atomic<unsigned> g_gamepad_ui{0};
 static std::atomic<double> g_plus_at{-1};
@@ -170,20 +172,22 @@ bool pip_shown_now() {
     if (g_mode == kDrcPip) return g_shown;
     if (g_mode == kDrcAuto) {
         AutoPipDecision decision{g_auto_until.load()};
-        return decision.shown(gamepad_ui(), g_auto_pin, display_now());
+        return decision.shown(gamepad_ui(), g_auto_pin, display_now(), g_auto_song_list, g_auto_peek);
     }
     return false;
 }
 bool drc_screen_shown(bool drc_window_visible) {
     if (g_mode == kDrcWindow) return drc_window_visible;
     if (g_mode == kDrcGamePad) return true;
-    if (g_mode == kDrcAuto) return g_auto_pin; // controls toggle the pin, even while a menu is visible
+    if (g_mode == kDrcAuto) return g_auto_pin || g_auto_peek; // controls toggle the pin (or the song-list peek), even while a menu is visible
     return pip_shown_now();
 }
 void display_show_drc(bool on) {
     if (g_has_drc_window || g_second_display_available) g_second_screen_off = !on;
     if (g_mode == kDrcAuto) {
-        g_auto_pin = on;
+        const AutoPipToggle t = auto_pip_show(on, g_auto_pin, gamepad_ui(), g_auto_song_list);
+        g_auto_pin = t.pin;
+        g_auto_peek = t.peek;
     } else {
         g_shown = on;
     }
@@ -193,7 +197,7 @@ void display_set_mode(int m) {
     g_plus_at = -1;
     g_mode = m;
     if (g_has_drc_window || g_second_display_available) g_second_screen_off = m == kDrcOff;  // chosen while the second screen is there
-    if (m == kDrcAuto) { g_auto_pin = false; g_auto_until = 0; g_gamepad_ui = 0; }
+    if (m == kDrcAuto) { g_auto_pin = false; g_auto_peek = false; g_auto_until = 0; g_gamepad_ui = 0; }
     else if (m != kDrcOff) g_shown = true;
 }
 
@@ -227,8 +231,9 @@ void display_gamepad_ui(GamePadUiState state) {
     const double now = display_now();
     if (g_mode == kDrcAuto) {
         AutoPipDecision decision{g_auto_until.load()};
-        decision.update(state, now);
+        decision.update(state, now, g_auto_song_list);
         g_auto_until = decision.until;
+        if (!auto_pip_peek_lasts(state)) g_auto_peek = false; // the song-list peek ends with the conducting
         return; // auto always keeps menus in PiP, including when the pause preference is on
     }
     if (!g_pause_view) return;

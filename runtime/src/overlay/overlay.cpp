@@ -3,6 +3,7 @@
 #include "controls_options.h"
 #include "gfx/display_modes.h"
 #include "gfx/gamepad_backdrop_options.h"
+#include "gfx/auto_pip_options.h"
 #include "platform/touch_options.h"
 #include <mutex>
 // In-game settings overlay: the Dear ImGui user interface (see overlay.h). The renderers draw the
@@ -1763,7 +1764,19 @@ void tab_display() {
         if (mode == 0)
             note("Gaming Mode shows one window at a time. A separate GamePad window may make the game picture blurry.");
         if (mode == 2)
-            note("Shows GamePad menus and the Wind Waker song list while open and follows Off-TV Play.");
+            note("%s", gfx::g_auto_song_list ? "Shows GamePad menus and the Wind Waker song list while open and follows Off-TV Play."
+                                       : "Shows GamePad menus while open and follows Off-TV Play.");
+        // #694: Automatic only (the other views show the GamePad picture, song list included, as they always do)
+        if (hostui::drc_modes() >= 4) {
+            int songs = gfx::g_auto_song_list ? 0 : 1;
+            ImGui::BeginDisabled(mode != 2);
+            if (combo("Song list while conducting", &songs, "Show\0Hide\0"))
+                hostui::post([songs] { gfx::auto_pip_options::set_option(songs == 0); });
+            ImGui::EndDisabled();
+            help(mode == 2 ? "The Wind Waker's song list in picture-in-picture while Link conducts. Hide: only menus open it; "
+                             "the picture-in-picture shortcut shows or hides it while you conduct."
+                           : "Used with Automatic picture-in-picture.");
+        }
         if (mode == 4)
             note("Only the GamePad picture. In the game, Minus switches to Off-TV "
                  "Play (the game on the GamePad).");
@@ -4020,8 +4033,8 @@ void activate_shortcut(int action, KeyOrigin origin) {
         case kAniso: if (render::feature_available(render::kFeatureAniso)) render::set_aniso(!render::aniso()); break;
         case kInterpolation: interp::toggle_fps(60); break;
         case kFXAA: if (render::feature_available(render::kFeatureFXAA)) render::set_fxaa(!render::fxaa()); break;
-        case kPiP:
-            if (hostui::drc_mode() != gfx::kDrcPip) { hostui::set_drc_mode(gfx::kDrcPip); hostui::show_drc(true); }
+        case kPiP:  // as Cmd+G in picture-in-picture and Automatic (there it pins, or peeks at the song list: #694)
+            if (hostui::drc_mode() != gfx::kDrcPip && hostui::drc_mode() != gfx::kDrcAuto) { hostui::set_drc_mode(gfx::kDrcPip); hostui::show_drc(true); }
             else hostui::show_drc(!hostui::drc_shown());
             break;
         case kPerformance:  // off -> minimal -> full -> off

@@ -76,6 +76,10 @@ extern std::atomic<float> g_pip_opacity;   // kPipOpacityMin..kPipOpacityMax
 extern std::atomic<int> g_filter;          // picture scaling (the SDL host mirrors gfxvk::scale_filter)
 extern std::atomic<bool> g_shown;          // window / pip modes: GamePad screen shown (Cmd+G, Pro Controller)
 extern std::atomic<bool> g_auto_pin;       // auto mode: Cmd+G keeps the overlay up
+// auto mode: the Wind Waker song list opens the overlay while Link conducts (Show, the default) or not (Hide, #694;
+// saved: auto_pip_options.h); with Hide, Cmd+G while conducting peeks at it (g_auto_peek) until the song ends
+extern std::atomic<bool> g_auto_song_list;
+extern std::atomic<bool> g_auto_peek;
 extern std::atomic<double> g_auto_until;   // auto mode: closing grace expires at this time (display_now)
 extern std::atomic<float> g_drc_aspect;    // of the GamePad image, for the GamePad window's touch
 extern std::atomic<bool> g_has_drc_window; // the host made a GamePad window (window mode possible)

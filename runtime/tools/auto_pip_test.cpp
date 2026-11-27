@@ -1,11 +1,33 @@
 #include "gfx/display_modes.h"
 #include "gfx/auto_pip.h"
+#include "gfx/auto_pip_options.h"
 #include <cassert>
 #include <cstdlib>
+#include <map>
+#include <string>
 
 void log_msg(const char*, ...) {}
 namespace input { void set_touch(bool, float, float) {} }
 namespace aspect { void set_window_aspect(float) {} }
+static void set_env(const char* name, const char* value) {  // "" clears it
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    if (*value) setenv(name, value, 1);
+    else unsetenv(name);
+#endif
+}
+// the saved settings (display.plist / settings.ini) for auto_pip_options.h
+static std::map<std::string, std::string> g_saved;
+namespace hostui {
+bool get(const char* key, std::string& value) {
+    auto found = g_saved.find(key);
+    if (found == g_saved.end()) return false;
+    value = found->second;
+    return true;
+}
+void set(const char* key, const std::string& value) { g_saved[key] = value; }
+}
 static gfx::PresentPlan frame() {
     return gfx::display_plan(true, 1280, 720, true, 854, 480, 1920, 1080, 1);
 }
@@ -105,6 +127,115 @@ int main() {
     assert(frame().pip_on); // closing delay
     g_auto_until = 0;
     assert(!frame().pip_on);
+    // #694 Song list while conducting: Hide. The policy: conducting alone opens nothing, menus still do.
+    {
+        AutoPipDecision hide;
+        hide.update(baton, 400, false);
+        assert(!hide.shown(baton, false, 400.1, false) && hide.until == 0);
+        hide.update(menu, 401, false);
+        assert(hide.shown(menu, false, 401, false));
+        GamePadUiState menu_while_conducting{true, true, false, false, true};
+        hide.update(menu_while_conducting, 402, false);
+        assert(hide.shown(menu_while_conducting, false, 402, false));
+        hide.update(baton, 402.1, false); // the menu closed, Link still conducts: only the closing delay
+        assert(hide.shown(baton, false, 402.2, false) && !hide.shown(baton, false, 402.4, false));
+        assert(hide.shown(baton, false, 402.4, false, true)); // a peek shows it while Link conducts
+        assert(!hide.shown(play, false, 402.4, false, true));  // and not after
+        assert(!hide.shown({true, false, true, false, true}, false, 403, false, true)); // Off-TV: full size anyway
+        assert(hide.shown(baton, true, 403, false)); // a pin still shows everything
+        // the shortcut: a press while conducting peeks (no pin), a press while pinned or peeking clears both
+        auto t = auto_pip_show(true, false, baton, false);
+        assert(!t.pin && t.peek);
+        t = auto_pip_show(true, false, play, false);
+        assert(t.pin && !t.peek); // not conducting: an ordinary pin
+        t = auto_pip_show(true, true, baton, false);
+        assert(t.pin && !t.peek); // already pinned (the Settings box): stays a pin
+        t = auto_pip_show(true, false, baton, true);
+        assert(t.pin && !t.peek); // Show: the pin as before
+        t = auto_pip_show(false, true, baton, false);
+        assert(!t.pin && !t.peek);
+    }
+    display_set_mode(kDrcAuto);
+    g_auto_song_list = false;
+    display_gamepad_ui(play);
+    assert(!frame().pip_on);
+    display_gamepad_ui(baton);
+    assert(!frame().pip_on && g_auto_until == 0); // conducting: the song list stays off the TV
+    display_gamepad_ui(menu);
+    assert(frame().pip_on); // the menus still open it
+    display_gamepad_ui(play);
+    g_auto_until = 0;
+    display_gamepad_ui(baton);
+    assert(!frame().pip_on && !drc_screen_shown(false));
+    display_show_drc(!drc_screen_shown(false)); // the PiP shortcut while conducting: shows the song list
+    assert(frame().pip_on && drc_screen_shown(false) && g_auto_peek && !g_auto_pin);
+    display_gamepad_ui(baton);
+    assert(frame().pip_on); // stays up for the whole song
+    display_show_drc(!drc_screen_shown(false)); // again: hidden
+    assert(!frame().pip_on && !drc_screen_shown(false) && !g_auto_peek && !g_auto_pin);
+    display_show_drc(!drc_screen_shown(false)); // and up again
+    assert(frame().pip_on);
+    display_gamepad_ui(play); // the song ends: the peek ends with it, nothing stuck open
+    assert(!frame().pip_on && !g_auto_peek && !g_auto_pin && !drc_screen_shown(false));
+    display_gamepad_ui(menu);
+    display_gamepad_ui(play);
+    g_auto_until = 0;
+    assert(!frame().pip_on);
+    display_show_drc(true); // a pin made in play survives conducting and stays after it
+    display_gamepad_ui(baton);
+    assert(frame().pip_on && g_auto_pin && !g_auto_peek);
+    display_gamepad_ui(play);
+    assert(frame().pip_on && drc_screen_shown(false));
+    display_show_drc(false);
+    assert(!frame().pip_on);
+    display_gamepad_ui(baton);
+    display_show_drc(true);
+    display_gamepad_ui({true, false, true, false, true}); // Off-TV mid-song: full size, the peek ends
+    assert(frame().drc_only && !g_auto_peek);
+    display_gamepad_ui(play);
+    assert(!frame().pip_on);
+    g_auto_song_list = true; // Show again: conducting opens it as before
+    display_gamepad_ui(baton);
+    assert(frame().pip_on);
+    display_gamepad_ui(play);
+    g_auto_until = 0;
+    display_gamepad_ui(baton);
+    display_show_drc(true); // Show: the shortcut pins, as before
+    assert(g_auto_pin && !g_auto_peek);
+    display_gamepad_ui(play);
+    g_auto_until = 0;
+    assert(frame().pip_on);
+    display_show_drc(false);
+    display_gamepad_ui(baton);
+    display_set_mode(kDrcPip); // Hide does not touch manual picture-in-picture
+    g_auto_song_list = false;
+    assert(frame().pip_on);
+    display_set_mode(kDrcAuto);
+    g_auto_song_list = true;
+    // the option is saved; Show is the default; WWHD_AUTO_PIP_BATON=0|1 overrides it for a start
+    {
+        namespace o = auto_pip_options;
+        set_env("WWHD_AUTO_PIP_BATON", "");
+        g_auto_song_list = false;
+        o::load_options();
+        assert(g_auto_song_list && g_saved.empty());
+        o::set_option(false);
+        assert(!g_auto_song_list && g_saved.at(o::kSettingKey) == "0");
+        g_auto_song_list = true;
+        o::load_options();
+        assert(!g_auto_song_list);
+        set_env("WWHD_AUTO_PIP_BATON", "1");
+        o::load_options();
+        assert(g_auto_song_list && g_saved.at(o::kSettingKey) == "0"); // not saved
+        set_env("WWHD_AUTO_PIP_BATON", "0");
+        g_saved.clear();
+        o::load_options();
+        assert(!g_auto_song_list && g_saved.empty());
+        set_env("WWHD_AUTO_PIP_BATON", "");
+        g_auto_peek = true;
+        o::set_option(true);
+        assert(g_auto_song_list && !g_auto_peek && g_saved.at(o::kSettingKey) == "1");
+    }
     for (int mode : {kDrcWindow, kDrcPip, kDrcOff, kDrcGamePad}) {
         display_set_mode(mode);
         g_has_drc_window = true;

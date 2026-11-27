@@ -25,6 +25,7 @@
 #include "../framegen.h"
 #include "../gfx/renderer.h"
 #include "../gfx/gamepad_backdrop_options.h"
+#include "../gfx/auto_pip_options.h"
 #include "../interp.h"
 #if WWHD_DECOMP
 #include "../t60/t60.h"  // (the Frame rate's true-logic choices)
@@ -425,6 +426,17 @@ void register_screen() {
         it.help = "Fills unused space with the menu background or edge colours. Menus and touch positions keep their normal size.";
         it.get = [] { return gfx::gamepad_backdrop::enabled.load(std::memory_order_relaxed) ? 1.f : 0.f; };
         it.set = [](float v) { gfx::gamepad_backdrop::set_option(v >= .5f); };
+        add(std::move(it));
+    }
+    {
+        // #694: Automatic picture-in-picture only (Settings > Display > GamePad screen, auto_pip_options.h)
+        Item it;
+        it.id = "screen.auto-pip-song-list", it.tab = "screen", it.label = "Song list while conducting", it.kind = Kind::Choice;
+        it.help = "Automatic picture-in-picture: Hide keeps the song list off the TV; the PiP shortcut still shows it.";
+        it.choices = {"Show", "Hide"};
+        it.get = [] { return gfx::g_auto_song_list.load(std::memory_order_relaxed) ? 0.f : 1.f; };
+        it.set = [](float v) { gfx::auto_pip_options::set_option(v < .5f); };
+        it.enabled = [] { return gfx::g_mode.load(std::memory_order_relaxed) == gfx::kDrcAuto; };
         add(std::move(it));
     }
     {
