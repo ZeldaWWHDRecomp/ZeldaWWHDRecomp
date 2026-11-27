@@ -1696,7 +1696,8 @@ class PortableShortcut(unittest.TestCase):
             self.assertEqual(text, "[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nPath=%s\nTerminal=false\n"
                                    "Categories=Game;\nIcon=%s\nActions=setup;\n\n[Desktop Action setup]\n"
                                    "Name=Setup (repair, update, change game)\nExec=%s --setup\n"
-                             % (setup.APP_NAME, setup.desktop_exec(target), pkg, icon, setup.desktop_exec(target)))
+                             % (setup.APP_NAME, setup.desktop_exec(target), setup.desktop_string(pkg), setup.desktop_string(icon),
+                                setup.desktop_exec(target)))
             with open(icon, "rb") as f:
                 self.assertEqual(f.read(8), b"\x89PNG\r\n\x1a\n")
 
@@ -1719,7 +1720,7 @@ class PortableShortcut(unittest.TestCase):
             game = os.path.join(d, "my dump", "game")
             _pkg, data = self._dirs(d, game_dir=game)
             _link, text = self._linux(d, data, game)
-            self.assertIn("Icon=%s\n" % os.path.join(data, "wwhd.png"), text)
+            self.assertIn("Icon=%s\n" % setup.desktop_string(os.path.join(data, "wwhd.png")), text)
 
     def _windows(self, d, data, game_dir=None):
         calls = []
