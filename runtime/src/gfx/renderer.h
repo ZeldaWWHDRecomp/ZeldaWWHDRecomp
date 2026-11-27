@@ -100,7 +100,7 @@ struct Backend {
     void (*gamepad_backdrop_scope)(const uint32_t* regs, bool begin) = nullptr;
 };
 enum Feature : int { kFeatureAO, kFeatureAOHires, kFeatureAniso, kFeatureFXAA, kFeatureScaleFilter, kFeatureCapture,
-                     kFeatureShaderHeadStart };
+                     kFeatureShaderHeadStart, kFeatureShadowBlur };
 
 extern const Backend* g_backend;
 #ifdef WWHD_HAS_METAL
@@ -200,6 +200,21 @@ void set_full_light(bool on);
 // magnified soft (on by default; no change at 1x; off: the original game). WWHD_SHARP_TEXT=0|1. gfx/sharp_text.h.
 bool sharp_text();
 void set_sharp_text(bool on);
+// Shadow blur, the Graphics menu's original / depth-aware / hybrid. shadow_edges: the game's blur of the sun shadow
+// mask skips taps at another depth, so lit foreground objects leave no unshadowed border on what is behind
+// them, the outer halo (gfx/area_sample.h). Off by default, the console's blur (original);
+// WWHD_SHADOW_EDGES=1 turns it on.
+bool shadow_edges();
+void set_shadow_edges(bool on);
+// shadow_rims: with shadow edges, the softening is one-sided (hybrid), so an object's edge still takes the
+// light or shadow of the background behind it, close to the game's own blur, the inner halo that gives
+// characters their rounded shading. On by default; WWHD_SHADOW_RIMS=0 keeps every surface to its own
+// shadow right up to its outline (depth-aware).
+bool shadow_rims();
+void set_shadow_rims(bool on);
+// How much of its weight a sample behind the pixel's surface keeps in the softening: 0.75 when hybrid,
+// 0 otherwise (WWHD_SHADOW_RIMS_WEIGHT, 0 to 1, tries others).
+float shadow_rims_weight();
 void set_horizon_haze(float haze);
 // The bloom extract shader's remapped[2].z is cThresholdParam.z (intensity).
 void scale_bloom_uniforms(void* remapped, size_t size);

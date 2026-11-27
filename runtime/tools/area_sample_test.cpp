@@ -100,15 +100,15 @@ void test_rewrite_gather_rays() {
     std::string msl = kMslSrc;
     assert(rewrite(msl, shadow, true) == 2);
     assert(msl.find("R0i = as_type<int4>(in.passParameterSem0);") != std::string::npos);
-    assert(msl.find("R1i = as_type<int4>(wwhd_gather_ray(in.passParameterSem0, in.passParameterSem1, supportBuffer.tex0Scale));") != std::string::npos);
-    assert(msl.find("R2i = as_type<int4>(wwhd_gather_ray(in.passParameterSem0, in.passParameterSem2, supportBuffer.tex0Scale));") != std::string::npos);
+    assert(msl.find("R1i = as_type<int4>(wwhd_gather_ray(in.passParameterSem0, in.passParameterSem1, abs(supportBuffer.tex0Scale)));") != std::string::npos);
+    assert(msl.find("R2i = as_type<int4>(wwhd_gather_ray(in.passParameterSem0, in.passParameterSem2, abs(supportBuffer.tex0Scale)));") != std::string::npos);
     assert(msl.find("R3i = as_type<int4>(in.passParameterSem3);") != std::string::npos);
     assert(msl.find("static float4 wwhd_gather_ray(") < msl.find("fragment FragmentOut main0"));
 
     std::string glsl = kGlslSrc;
     assert(rewrite(glsl, shadow, false) == 2);
-    assert(glsl.find("R1i = floatBitsToInt(wwhdGatherRay(passParameterSem0, passParameterSem1, uf_tex0Scale));") != std::string::npos);
-    assert(glsl.find("R2i = floatBitsToInt(wwhdGatherRay(passParameterSem0, passParameterSem2, uf_tex0Scale));") != std::string::npos);
+    assert(glsl.find("R1i = floatBitsToInt(wwhdGatherRay(passParameterSem0, passParameterSem1, abs(uf_tex0Scale)));") != std::string::npos);
+    assert(glsl.find("R2i = floatBitsToInt(wwhdGatherRay(passParameterSem0, passParameterSem2, abs(uf_tex0Scale)));") != std::string::npos);
     assert(glsl.find("layout(location = 1) in vec4 passParameterSem1;") != std::string::npos);  // declarations untouched
     assert(glsl.find("vec4 wwhdGatherRay(") < glsl.find("void main("));
 
@@ -241,6 +241,145 @@ void test_gather_grid() {
     assert(scale_gather_grid(nullptr, 2, 640, 360, 3.0f, 3.0f) == 0);
 }
 
+// Depth-aware shadow softening (render::shadow_edges): the mask's twin translation writes a depth key into
+// A, and the chain's Gaussian weighs every sample by it when the renderer negates the tex0 scale.
+void test_shadow_edges() {
+    // the mask's farthest-depth position and its export, as decompiled
+    const std::string farthest = "R2i.z = floatBitsToInt(mul_nonIEEE1(intBitsToFloat(backupReg1i), -(intBitsToFloat(uf_remappedPS[0].x))));\n";
+    std::string mask = std::string(kGlslSrc);
+    mask.insert(mask.rfind("}"), farthest + "passPixelColor0 = vec4(intBitsToFloat(R4i.x), intBitsToFloat(R4i.y), "
+                                            "intBitsToFloat(R4i.z), intBitsToFloat(R4i.x));\n");
+    // the game's translation: the rays only, the game's mask otherwise (its twins' translation can be keyed)
+    std::string game = mask;
+    assert(rewrite(game, Program{1u, Fix::GatherRays}, false) == 2);
+    assert(game.find("wwhd") != std::string::npos && game.find("wwhdOwnDepth") == std::string::npos &&
+           game.find("wwhdShadowKey") == std::string::npos && game.find("uf_tex0Scale.x < 0.0") == std::string::npos);
+    assert(shadow_keyable(game) && game.find("wwhdShadowKey") == std::string::npos);
+    // the twins' translation: the pixel's own depth for the lookup, and its key in A (B, a shadow term the
+    // materials read, is kept), with no test of the scale's sign
+    assert(rewrite(mask, Program{1u, Fix::GatherRays}, false, true) == 2);
+    assert(mask.find(farthest + "R2i.z = floatBitsToInt(wwhdOwnDepth(textureUnitPS0, "
+                                "intBitsToFloat(uf_remappedPS[0].x), intBitsToFloat(uf_remappedPS[0].y)));") != std::string::npos);
+    // the key at 16 bits: the fraction of a step in R, the 8-bit steps in A
+    assert(mask.find("vec2 wwhdKey = wwhdShadowKey(intBitsToFloat(R2i.z));\npassPixelColor0 = vec4(wwhdKey.x, "
+                     "intBitsToFloat(R4i.y), intBitsToFloat(R4i.z), wwhdKey.y);") != std::string::npos);
+    assert(mask.find("uf_tex0Scale.x < 0.0") == std::string::npos);
+    assert(mask.find("float wwhdOwnDepth(") < mask.find("void main(") && mask.find("vec2 wwhdShadowKey(") < mask.find("void main("));
+    assert(mask.find("wwhdOwnNormal(textureUnitPS0") == std::string::npos);  // no normal line: the game's normal
+    // the twin is smaller than the scene (kShadowTwinScale): each pixel takes its depth from one scene pixel, by
+    // division (exact for 0.75), and its rays move to that pixel's centre in the main body only
+    assert(kShadowTwinScale == 0.75f);
+    assert(mask.find("ivec2(gl_FragCoord.xy / 0.750000 + 0.001)") != std::string::npos);
+    assert(mask.find("vec2 wwhdShift = (floor(gl_FragCoord.xy / 0.750000 + 0.001) + 0.5) * 0.750000 - gl_FragCoord.xy;") >
+           mask.find("void main("));
+    assert(mask.find("vec4 wwhdSem0 = passParameterSem0 + dFdx(passParameterSem0) * wwhdShift.x + "
+                     "dFdy(passParameterSem0) * wwhdShift.y;") != std::string::npos);
+    assert(mask.find("in vec4 passParameterSem0;") != std::string::npos);  // declarations untouched
+    assert(mask.find("R0i = floatBitsToInt(wwhdSem0);") != std::string::npos);
+    // with the normal line: N rebuilt from the pixel's own side of a silhouette
+    const std::string normal = "R126i.z = floatBitsToInt(mul_nonIEEE(intBitsToFloat(R126i.z), intBitsToFloat(PS0i)));\n";
+    std::string withNormal = std::string(kGlslSrc);
+    withNormal.insert(withNormal.rfind("}"), farthest + normal + "passPixelColor0 = vec4(intBitsToFloat(R4i.x), "
+                                             "intBitsToFloat(R4i.y), intBitsToFloat(R4i.z), intBitsToFloat(R4i.x));\n");
+    assert(rewrite(withNormal, Program{1u, Fix::GatherRays}, false, true) == 2);
+    assert(withNormal.find(normal + "{\nvec3 wwhdN = wwhdOwnNormal(textureUnitPS0, ") != std::string::npos);
+    assert(withNormal.find("R127i.x = floatBitsToInt(wwhdN.x); R127i.y = floatBitsToInt(wwhdN.y); "
+                           "R126i.z = floatBitsToInt(wwhdN.z);") != std::string::npos);
+    assert(withNormal.find("vec3 wwhdOwnNormal(") < withNormal.find("void main("));
+    assert(withNormal.find("wwhdShadowKey(intBitsToFloat(R2i.z))") != std::string::npos);
+    // the export in the NaN guard (finiteColorOutputs): keyed, and the key's export guarded too
+    std::string guarded = std::string(kGlslSrc);
+    guarded.insert(guarded.rfind("}"), farthest + "passPixelColor0 = wwhd_finite(vec4(intBitsToFloat(R4i.x), "
+                                                  "intBitsToFloat(R4i.y), intBitsToFloat(R4i.z), intBitsToFloat(R4i.x)));\n");
+    assert(shadow_keyable(guarded) && rewrite(guarded, Program{1u, Fix::GatherRays}, false, true) == 2);
+    assert(guarded.find("vec2 wwhdKey = wwhdShadowKey(intBitsToFloat(R2i.z));\npassPixelColor0 = wwhd_finite(vec4(wwhdKey.x, "
+                        "intBitsToFloat(R4i.y), intBitsToFloat(R4i.z), wwhdKey.y));") != std::string::npos);
+    std::string noExport = kGlslSrc;  // another export: the rays are still fixed, no key
+    assert(!shadow_keyable(noExport));
+    assert(rewrite(noExport, Program{1u, Fix::GatherRays}, false, true) == 2 && noExport.find("wwhdShadowKey") == std::string::npos);
+
+    // the horizontal Gaussian as decompiled: three taps, the centre first
+    const std::string blur =
+        "void main()\n{\nR0f = passParameterSem0;\n"
+        "R1f.xyzw = (texture(textureUnitPS0, vec2(R0f.w,R0f.x)).xyzw);\n"
+        "R2f.xyzw = (texture(textureUnitPS0, vec2(R0f.y,R0f.x)).xyzw);\n"
+        "R0f.xyzw = (texture(textureUnitPS0, vec2(R0f.z,R0f.x)).xyzw);\n"
+        "R0f.x = R0f.x * intBitsToFloat(0x3eb4b4b5) + R123f.w;\n"
+        "passPixelColor0 = vec4(R0f.x, R0f.y, R0f.z, R0f.w);\n}\n";
+    // the game's own translation: the console-grid taps alone, as before the option (Original runs none of the twin code)
+    std::string gameBlur = blur, plain = blur;
+    assert(rewrite(gameBlur, Program{1u, Fix::GuestTapsLevel0}, false) == 3 && rewrite_area_taps(plain, 1u, false, true) == 3);
+    assert(gameBlur == plain && gameBlur.find("wwhdEdge") == std::string::npos &&
+           gameBlur.find("uf_tex0Scale.x < 0.0") == std::string::npos);
+    // the twins' translation
+    std::string glsl = blur;
+    assert(rewrite(glsl, Program{1u, Fix::GuestTapsLevel0}, false, true) == 3);
+    for (const char* tap : {"wwhdEdgeTap(textureUnitPS0, uf_tex0Scale, 0, vec2(R0f.w,R0f.x))",
+                            "wwhdEdgeTap(textureUnitPS0, uf_tex0Scale, 1, vec2(R0f.y,R0f.x))",
+                            "wwhdEdgeTap(textureUnitPS0, uf_tex0Scale, 2, vec2(R0f.z,R0f.x))"})
+        assert(glsl.find(tap) != std::string::npos);
+    // without the decompiler's padding (another uniform layout): no hybrid weight, both ways
+    assert(glsl.find("passPixelColor0 = uf_tex0Scale.x < 0.0 ? wwhdEdgeBlur(textureUnitPS0, abs(uf_tex0Scale), 0.0) : "
+                     "vec4(R0f.x, R0f.y, R0f.z, R0f.w);") != std::string::npos);
+    assert(glsl.find("return wwhdGuestSampleLevel0(t, abs(scale), uv);") != std::string::npos);  // positive: as before
+    // negated: the game's tap is not read, only its position kept for the edge blur
+    assert(glsl.find("wwhdTapUv[i] = uv;\n    if (scale.x < 0.0) return vec4(0.0);\n    return wwhdGuestSampleLevel0(") !=
+           std::string::npos);
+    assert(glsl.find("vec4 wwhdAreaSample(sampler2D t") < glsl.find("vec4 wwhdEdgeTap("));
+    assert(glsl.find("vec4 wwhdEdgeBlur(") < glsl.find("void main("));
+    assert(glsl.find("min(abs(plain), abs(cont))") != std::string::npos && glsl.find("r.xw = own.xw;") != std::string::npos);
+    assert(glsl.find("return v.w + v.x / 255.0;") != std::string::npos);  // the key at 16 bits
+    // the key is compared with the pixel's surface continued (its slope), on whole texels
+    assert(glsl.find("float wwhdKeySlope(") < glsl.find("vec4 wwhdEdgeBlur(") &&
+           glsl.find("dot(slope, vec2(q - ivec2(gl_FragCoord.xy)))") != std::string::npos);
+    assert(glsl.find("vec4 v = texture(t, ") == std::string::npos);
+    // a texel behind the pixel's surface keeps at least the hybrid weight (one-sided)
+    assert(glsl.find("plain > 0.0 && cont > 0.0 ? max(keep, rims) : keep") != std::string::npos);
+    assert(rims_offset(glsl, 16) == -1);  // nothing to write
+    // with the padding, the weight comes from the decompiler's padding before uf_tex0Scale
+    const std::string block = "layout(set = 1, binding = 1) uniform ufBlock\n{\nuniform vec4 uf_fragCoordScaleCompatPadding;\n"
+                              "uniform vec2 uf_tex0Scale;\n};\n";
+    {
+        std::string padded = block + blur;
+        assert(rewrite(padded, Program{1u, Fix::GuestTapsLevel0}, false, true) == 3);
+        assert(padded.find("passPixelColor0 = uf_tex0Scale.x < 0.0 ? wwhdEdgeBlur(textureUnitPS0, abs(uf_tex0Scale), "
+                           "clamp(uf_fragCoordScaleCompatPadding.x, 0.0, 1.0)) : vec4(R0f.x, R0f.y, R0f.z, R0f.w);") !=
+               std::string::npos);
+        assert(rims_offset(padded, 16) == 0 && rims_offset(padded, 48) == 32 && rims_offset(padded, 8) == -1);
+    }
+    // the export in the NaN guard (finiteColorOutputs): the edge blur's export guarded too
+    {
+        std::string guarded = blur;
+        const std::string out = "passPixelColor0 = vec4(R0f.x, R0f.y, R0f.z, R0f.w);";
+        guarded.replace(guarded.find(out), out.size(), "passPixelColor0 = wwhd_finite(vec4(R0f.x, R0f.y, R0f.z, R0f.w));");
+        assert(rewrite(guarded, Program{1u, Fix::GuestTapsLevel0}, false, true) == 3);
+        assert(guarded.find("passPixelColor0 = wwhd_finite(uf_tex0Scale.x < 0.0 ? wwhdEdgeBlur(textureUnitPS0, "
+                            "abs(uf_tex0Scale), 0.0) : vec4(R0f.x, R0f.y, R0f.z, R0f.w));") != std::string::npos);
+    }
+    // taps that add the sampler's LOD bias (gfx/sampler_lod_bias.h, MoltenVK) go through the overload taking it
+    {
+        std::string biased = blur;
+        const std::string bias = ",uf_tex0LodBias)";
+        for (size_t at = biased.find(").xyzw);"); at != std::string::npos; at = biased.find(").xyzw);", at + bias.size()))
+            biased.replace(at, 1, bias);
+        assert(rewrite(biased, Program{1u, Fix::GuestTapsLevel0}, false, true) == 3);
+        assert(biased.find("wwhdEdgeTap(textureUnitPS0, uf_tex0Scale, 0, vec2(R0f.w,R0f.x),uf_tex0LodBias)") !=
+               std::string::npos);
+        assert(biased.find("vec4 wwhdEdgeTap(sampler2D t, vec2 scale, int i, vec2 uv, float lodBias)") <
+               biased.find("void main("));
+        assert(biased.find("return wwhdGuestSampleLevel0(t, abs(scale), uv, lodBias);") != std::string::npos);
+    }
+    // Metal keeps the console-grid taps only
+    std::string msl = "fragment FragmentOut main0(FragmentIn in [[stage_in]]) {\n"
+                      "R1f = (tex0.sample(samplr0, float2(R0f.w,R0f.x)));\n}\n";
+    assert(rewrite(msl, Program{1u, Fix::GuestTapsLevel0}, true) == 1 && msl.find("wwhd_guest_sample_level0(tex0") != std::string::npos);
+    // a different blur body is left with the console-grid taps
+    std::string two = "void main() {\nR1f = (texture(textureUnitPS0, vec2(R0f.w,R0f.x)));\n"
+                      "passPixelColor0 = vec4(R0f.x, R0f.y, R0f.z, R0f.w);\n}\n";
+    assert(rewrite(two, Program{1u, Fix::GuestTapsLevel0}, false, true) == 1 && two.find("wwhdEdge") == std::string::npos);
+    assert(two.find("passPixelColor0 = vec4(R0f.x, R0f.y, R0f.z, R0f.w);") != std::string::npos);
+}
+
 void test_classification() {
     unsigned char zeros[2112] = {};
     assert(pixel_program(zeros, sizeof zeros).fix == Fix::None);
@@ -259,6 +398,8 @@ void test_classification() {
     assert(gfx::program_kind(zeros, 656, false) == gfx::ProgramKind::Other);  // the bloom chain's sizes
     assert(gfx::program_kind(zeros, 768, false) == gfx::ProgramKind::Other);
     assert(gfx::program_kind(zeros, 416, false) == gfx::ProgramKind::Other);  // the chain's helpers' size
+    assert(gfx::program_kind(zeros, 448, false) == gfx::ProgramKind::Other);  // the softening chain's sizes
+    assert(gfx::program_kind(zeros, 160, false) == gfx::ProgramKind::Other);
     assert(gfx::program_kind(nullptr, 768, false) == gfx::ProgramKind::Other);
     assert(gfx::size_request(gfx::ProgramKind::BloomHelper).claim == gfx::TargetSize::Internal);  // never claims
     assert(gfx::size_request(gfx::ProgramKind::DepthDownsample).claim == gfx::TargetSize::Internal);
@@ -274,6 +415,7 @@ int main() {
     test_guest_taps_rewritten();
     test_console_grid_fallback();
     test_gather_grid();
+    test_shadow_edges();
     test_classification();
     std::puts("area_sample: ok");
     return 0;

@@ -17,6 +17,8 @@ decltype(Renderer::surfaces)& stereo_copy_cache(uint32_t addr,uint32_t width,uin
 // them), the sun atlas, which eye 0 writes and transitions first, captured photographs in
 // their layout pane, and the textures neither eye renders (below).
 void stereo_select_eye(int eye);
+// Before s is freed: the unselected eye's saved pass state no longer names it (draw.cpp's shadow twins).
+void stereo_forget_pass_surface(const Surface* s);
 // Eye 1 samples eye 0's image of a texture the guest uploads and neither eye renders: one image
 // and one upload for both eyes, and eye 1 can bind eye 0's descriptor set (draw.cpp). Shared while
 // eye 1 has no surface at its address, eye 0 no render target there, and it is uploaded for this

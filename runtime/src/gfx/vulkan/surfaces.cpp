@@ -1135,6 +1135,403 @@ static void draw_depth_copy(Surface* src,uint32_t srcLevel,uint32_t srcLayer,uin
     }
     transition_image(dst,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
+namespace {
+struct ShadowMergeResources {
+    VkDevice device=VK_NULL_HANDLE;
+    VkDescriptorSetLayout descriptors=VK_NULL_HANDLE;
+    VkPipelineLayout layout=VK_NULL_HANDLE;
+    VkSampler sampler=VK_NULL_HANDLE;
+    std::unordered_map<uint32_t,VkPipeline> pipelines;  // by colour format
+} shadowMerge;
+// each pixel of the game's target averages the twin over its footprint (scale twin pixels a pixel): ceil(scale)
+// bilinear reads per axis, spread evenly over it
+const char* shadowMergeFragment=R"glsl(#version 450
+layout(set=0,binding=0) uniform sampler2D twin;
+layout(push_constant) uniform Params { vec2 scale; } p;
+layout(location=0) out vec4 colour;
+void main() {
+    vec2 k=max(ceil(p.scale-0.001),vec2(1.0));
+    vec2 size=vec2(textureSize(twin,0));
+    vec2 origin=floor(gl_FragCoord.xy)*p.scale;
+    vec4 sum=vec4(0.0);
+    for(float y=0.5;y<k.y;y+=1.0)
+        for(float x=0.5;x<k.x;x+=1.0)
+            sum+=textureLod(twin,(origin+vec2(x,y)/k*p.scale)/size,0.0);
+    colour=sum/(k.x*k.y);
+}
+)glsl";
+VkPipeline shadow_merge_pipeline(VkFormat format) {
+    if(shadowMerge.device&&shadowMerge.device!=R.device)shadowMerge={};  // a new device: the old one's objects went with it
+    shadowMerge.device=R.device;
+    if(!shadowMerge.descriptors) {
+        VkDescriptorSetLayoutBinding binding{0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
+        VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};ci.bindingCount=1;ci.pBindings=&binding;
+        check_vk(vkCreateDescriptorSetLayout(R.device,&ci,nullptr,&shadowMerge.descriptors),"create shadow merge descriptors");
+    }
+    if(!shadowMerge.layout) {
+        VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT,0,2*sizeof(float)};
+        VkPipelineLayoutCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};ci.setLayoutCount=1;ci.pSetLayouts=&shadowMerge.descriptors;
+        ci.pushConstantRangeCount=1;ci.pPushConstantRanges=&push;
+        check_vk(vkCreatePipelineLayout(R.device,&ci,nullptr,&shadowMerge.layout),"create shadow merge layout");
+    }
+    if(!shadowMerge.sampler) {
+        VkSamplerCreateInfo ci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};ci.minFilter=ci.magFilter=VK_FILTER_LINEAR;ci.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        ci.addressModeU=ci.addressModeV=ci.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        check_vk(vkCreateSampler(R.device,&ci,nullptr,&shadowMerge.sampler),"create shadow merge sampler");
+    }
+    if(auto it=shadowMerge.pipelines.find(uint32_t(format));it!=shadowMerge.pipelines.end())return it->second;
+    VkShaderModule vs=VK_NULL_HANDLE,fs=VK_NULL_HANDLE;VkPipeline result=VK_NULL_HANDLE;
+    try {
+        vs=depth_copy_module(depthCopyVertex,true);fs=depth_copy_module(shadowMergeFragment,false);
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        for(int i=0;i<2;++i){stages[i].sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;stages[i].stage=i?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;stages[i].module=i?fs:vs;stages[i].pName="main";}
+        VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};ia.topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};vp.viewportCount=vp.scissorCount=1;
+        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};rs.polygonMode=VK_POLYGON_MODE_FILL;rs.cullMode=VK_CULL_MODE_NONE;rs.lineWidth=1;
+        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};ms.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo dss{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        // the shadow only: R (ambient occlusion) and A keep the game's values
+        VkPipelineColorBlendAttachmentState blend{};blend.colorWriteMask=VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT;
+        VkPipelineColorBlendStateCreateInfo bs{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};bs.attachmentCount=1;bs.pAttachments=&blend;
+        VkDynamicState states[]={VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};ds.dynamicStateCount=2;ds.pDynamicStates=states;
+        VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        rendering.colorAttachmentCount=1;rendering.pColorAttachmentFormats=&format;
+        VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};pipeline_targets(ci,rendering);ci.stageCount=2;ci.pStages=stages;
+        ci.pVertexInputState=&vi;ci.pInputAssemblyState=&ia;ci.pViewportState=&vp;ci.pRasterizationState=&rs;ci.pMultisampleState=&ms;
+        ci.pDepthStencilState=&dss;ci.pColorBlendState=&bs;ci.pDynamicState=&ds;ci.layout=shadowMerge.layout;
+        check_vk(stutter::create_graphics(R.frame, "surface_pipeline", R.device,R.pipelineCache,1,&ci,nullptr,&result, [] {
+            begin_pipeline_pending_frame();
+            present_completed_frame_while_pipeline_pending();
+        }),"create shadow merge pipeline");
+        shadowMerge.pipelines.emplace(uint32_t(format),result);++R.pipelineCreates;R.pipelineCacheDirty=true;R.pipelineCacheChangedFrame=R.frame;
+    } catch(...) {
+        if(result)vkDestroyPipeline(R.device,result,nullptr);
+        if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(fs)vkDestroyShaderModule(R.device,fs,nullptr);
+        throw;
+    }
+    vkDestroyShaderModule(R.device,vs,nullptr);vkDestroyShaderModule(R.device,fs,nullptr);
+    return result;
+}
+}
+void draw_shadow_merge(Surface* twin,Surface* dst,uint32_t dstSlice) {
+    if(!twin||!dst||!twin->image||!dst->image||twin->image==dst->image||dst->fmt.depth)return;
+    VkPipeline pipeline=shadow_merge_pipeline(dst->fmt.pixel);
+    end_encoder();
+    transition_image(twin,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_ACCESS_SHADER_READ_BIT);
+    transition_image(dst,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_COLOR_ATTACHMENT_READ_BIT|VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+    auto cmd=command_buffer();
+    VkDescriptorSet set=VK_NULL_HANDLE;
+    VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};allocation.descriptorPool=descriptor_pool();
+    allocation.descriptorSetCount=1;allocation.pSetLayouts=&shadowMerge.descriptors;
+    check_vk(vkAllocateDescriptorSets(R.device,&allocation,&set),"allocate shadow merge descriptors");
+    // a sampled view (identity components): attachment views may name only the attachment usage (issue #144)
+    const uint32_t identity=uint32_t(VK_IMAGE_VIEW_TYPE_2D)<<12|0u|1u<<3|2u<<6|3u<<9;
+    auto found=twin->sampledViews.find(identity);
+    VkImageView view=found!=twin->sampledViews.end()?found->second:make_sampled_view(twin,identity);
+    VkDescriptorImageInfo image{shadowMerge.sampler,view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=set;write.dstBinding=0;write.descriptorCount=1;
+    write.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;write.pImageInfo=&image;
+    vkUpdateDescriptorSets(R.device,1,&write,0,nullptr);
+    const uint32_t w=dst->extent.width,h=dst->extent.height;
+    VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    attachment.imageView=layer_view(dst,dstSlice);attachment.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachment.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD;attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;  // R and A stay
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};rendering.renderArea={{0,0},{w,h}};rendering.layerCount=1;
+    rendering.colorAttachmentCount=1;rendering.pColorAttachments=&attachment;
+    begin_pass(cmd,rendering,[&] {
+        PassBegin pass;pass.formats.colorCount=1;pass.formats.colors[0]=dst->fmt.pixel;pass.layouts[0]=dst->layout;return pass;
+    });++R.renderPassCount;
+    VkViewport viewport{0,0,float(w),float(h),0,1};VkRect2D area{{0,0},{w,h}};
+    record::vkCmdSetViewport(cmd,0,1,&viewport);record::vkCmdSetScissor(cmd,0,1,&area);
+    record::vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,shadowMerge.layout,0,1,&set,0,nullptr);
+    record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline);
+    const float scale[2]={float(twin->extent.width)/float(w),float(twin->extent.height)/float(h)};
+    record::vkCmdPushConstants(cmd,shadowMerge.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof scale,scale);
+    record::vkCmdDraw(cmd,3,1,0,0);
+    end_pass(cmd);
+}
+namespace {
+ShadowMergeResources shadowUpsample;
+// The full-resolution shadow read's stand-in (draw.cpp full_shadow_image), right half: each pixel takes the source
+// twin's texels around it (the chain's 240x135 step) as far as their depth key continues the pixel's own surface,
+// the key read from the light buffer's twin (guide). The 2x2 bilinear texels first; with too little of them on
+// the pixel's surface, 4x4 within two texels; with none, the texel whose key comes closest.
+const char* shadowUpsampleFragment=R"glsl(#version 450
+layout(set=0,binding=0) uniform sampler2D src;
+layout(set=0,binding=1) uniform sampler2D guide;
+layout(set=0,binding=2) uniform sampler2D depthTex;  // the scene depth (useDepth), else the guide again
+layout(push_constant) uniform Params { vec2 dstSize; float rims; float dstX; float nearStep; float useDepth; } p;
+layout(location=0) out vec4 colour;
+float keyOf(vec4 v) { return v.w + v.x / 255.0; }
+float slopeAt(ivec2 q, ivec2 o, float own) {
+    ivec2 last = textureSize(guide, 0) - 1;
+    float f = keyOf(texelFetch(guide, clamp(q + o, ivec2(0), last), 0)) - own;
+    float b = own - keyOf(texelFetch(guide, clamp(q - o, ivec2(0), last), 0));
+    return f * b <= 0.0 ? 0.0 : (abs(f) < abs(b) ? f : b) / float(o.x + o.y);
+}
+// the shadow at one full-resolution pixel of the guide
+// at: where the pixel is, in guide pixels (the guide pixel's centre, unless the target is larger than the guide:
+// then the pixel's own position, so neighbours that take the same guide pixel still blend the source apart)
+vec4 shadeAt(ivec2 gp, vec2 at) {
+    ivec2 gs = textureSize(guide, 0), ss = textureSize(src, 0);
+    float own = keyOf(texelFetch(guide, gp, 0));
+    vec2 ratio = vec2(gs) / vec2(ss);
+    int reach = int(clamp(round(ratio.x), 1.0, 8.0));
+    vec2 slope = vec2(slopeAt(gp, ivec2(reach, 0), own), slopeAt(gp, ivec2(0, reach), own));
+    vec2 f = at / ratio - 0.5;
+    vec2 shift = at - (vec2(gp) + 0.5);  // the key's continuation runs from the guide pixel's centre
+    ivec2 b = ivec2(floor(f));
+    vec2 a = f - floor(f);
+    vec4 near = vec4(0.0), wide = vec4(0.0), best = vec4(0.0);
+    float nearW = 0.0, wideW = 0.0, bestD = 1e9;
+    for (int y = -1; y <= 2; y++)
+        for (int x = -1; x <= 2; x++) {
+            vec4 v = texelFetch(src, clamp(b + ivec2(x, y), ivec2(0), ss - 1), 0);
+            vec2 d = vec2(x, y) - a;
+            float plain = keyOf(v) - own, cont = plain - dot(slope, d * ratio + shift);
+            float m = min(abs(plain), abs(cont));
+            float keep = clamp(1.5 - 127.5 * m, 0.0, 1.0);
+            keep = plain > 0.0 && cont > 0.0 ? max(keep, p.rims) : keep;
+            vec2 t = max(vec2(0.0), 1.0 - abs(d) * 0.5);
+            wide += v * t.x * t.y * keep;
+            wideW += t.x * t.y * keep;
+            if (x >= 0 && x <= 1 && y >= 0 && y <= 1) {
+                vec2 l = max(vec2(0.0), 1.0 - abs(d));
+                near += v * l.x * l.y * keep;
+                nearW += l.x * l.y * keep;
+            }
+            if (t.x * t.y > 0.0 && m < bestD) { bestD = m; best = v; }
+        }
+    return nearW >= 0.25 ? near / nearW : wideW > 1e-4 ? wide / wideW : best;
+}
+vec4 shadeAt(ivec2 gp) {
+    gp = clamp(gp, ivec2(0), textureSize(guide, 0) - 1);
+    return shadeAt(gp, vec2(gp) + 0.5);
+}
+// Hybrid's near side of an outline: at two of the material's texels (nearStep guide pixels each, 8 taps around the
+// pixel) only surfaces behind the pixel's own, none in front
+void nearTap(ivec2 gp, ivec2 last, vec2 o, float own, vec2 slope, inout bool behind, inout bool front) {
+    float plain = keyOf(texelFetch(guide, clamp(gp + ivec2(o), ivec2(0), last), 0)) - own;
+    float cont = plain - dot(slope, o);
+    if (min(abs(plain), abs(cont)) * 127.5 < 1.0) return;
+    if (plain > 0.0 && cont > 0.0) behind = true;
+    else if (plain < 0.0 && cont < 0.0) front = true;
+}
+bool nearSide(ivec2 gp) {
+    float stepPx = p.nearStep;
+    ivec2 last = textureSize(guide, 0) - 1;
+    gp = clamp(gp, ivec2(0), last);
+    float own = keyOf(texelFetch(guide, gp, 0));
+    int r = max(1, int(round(stepPx)));
+    vec2 slope = vec2(slopeAt(gp, ivec2(r, 0), own), slopeAt(gp, ivec2(0, r), own));
+    bool behind = false, front = false;
+    for (int y = -2; y <= 2; y += 2)
+        for (int x = -2; x <= 2; x += 2)
+            if (x != 0 || y != 0) nearTap(gp, last, round(vec2(x, y) * stepPx), own, slope, behind, front);
+    return behind && !front;
+}
+// how far a depth may stray and still be the pixel's own surface: 4 times its change to the next pixel on the side
+// that continues it, along each axis (the other side may be across an outline), and at least 0.2% of the view
+// distance (1 - d0 goes as near / distance): on a surface facing the camera the change is down at float rounding,
+// which accepted and refused neighbours on the same wall in a checker pattern
+float depthTol(ivec2 sp, ivec2 last, float d0) {
+    float l = abs(texelFetch(depthTex, clamp(sp - ivec2(1, 0), ivec2(0), last), 0).x - d0);
+    float r = abs(texelFetch(depthTex, clamp(sp + ivec2(1, 0), ivec2(0), last), 0).x - d0);
+    float u = abs(texelFetch(depthTex, clamp(sp - ivec2(0, 1), ivec2(0), last), 0).x - d0);
+    float d = abs(texelFetch(depthTex, clamp(sp + ivec2(0, 1), ivec2(0), last), 0).x - d0);
+    return max(4.0 * max(min(l, r), min(u, d)), 0.002 * (1.0 - d0)) + 1e-7;
+}
+// a pixel of a target larger than the guide (the stand-in's right half over smaller twins): of the 2x2 guide
+// pixels around it, the nearest, unless its depth breaks from the pixel's own (more than 4 times the depth's
+// change to the next pixel); then the one whose depth comes closest
+ivec2 pickGuide(vec2 at) {
+    ivec2 ds = textureSize(depthTex, 0), last = ds - 1;
+    vec2 toDepth = vec2(ds) / p.dstSize;
+    vec2 px = floor(gl_FragCoord.xy - vec2(p.dstX, 0.0)) + 0.5;
+    ivec2 sp = clamp(ivec2(px * toDepth), ivec2(0), last);
+    float d0 = texelFetch(depthTex, sp, 0).x;
+    float tol = depthTol(sp, last, d0);
+    vec2 per = vec2(textureSize(guide, 0)) / p.dstSize;
+    ivec2 gl = textureSize(guide, 0) - 1;
+    ivec2 nearest = clamp(ivec2(floor(at)), ivec2(0), gl);
+    float dn = abs(texelFetch(depthTex, clamp(ivec2((vec2(nearest) + 0.5) / per * toDepth + 0.001), ivec2(0), last), 0).x - d0);
+    if (dn <= tol) return nearest;
+    ivec2 b = ivec2(floor(at - 0.5)), best = nearest;
+    float bestD = dn;
+    for (int y = 0; y <= 1; y++)
+        for (int x = 0; x <= 1; x++) {
+            ivec2 c = clamp(b + ivec2(x, y), ivec2(0), gl);
+            float d = abs(texelFetch(depthTex, clamp(ivec2((vec2(c) + 0.5) / per * toDepth + 0.001), ivec2(0), last), 0).x - d0);
+            if (d < bestD) { bestD = d; best = c; }
+        }
+    if (bestD <= tol) return best;
+    // a thin strip none of whose 2x2 texels took its depth (each took one scene pixel's): the ring around them
+    for (int y = -1; y <= 2; y++)
+        for (int x = -1; x <= 2; x++) {
+            if (x >= 0 && x <= 1 && y >= 0 && y <= 1) continue;
+            ivec2 c = clamp(b + ivec2(x, y), ivec2(0), gl);
+            float d = abs(texelFetch(depthTex, clamp(ivec2((vec2(c) + 0.5) / per * toDepth + 0.001), ivec2(0), last), 0).x - d0);
+            if (d < bestD) { bestD = d; best = c; }
+        }
+    return best;
+}
+// the sharp shadow (the guide's G: the full-size level, as the materials' level-0 read takes it) at a pixel of a
+// target larger than the guide: their bilinear read, from the 2x2 texels on the pixel's own surface only (the
+// texel taken by pickGuide when none is)
+float sharpAt(vec2 at, ivec2 picked) {
+    ivec2 ds = textureSize(depthTex, 0), last = ds - 1;
+    vec2 toDepth = vec2(ds) / p.dstSize;
+    vec2 px = floor(gl_FragCoord.xy - vec2(p.dstX, 0.0)) + 0.5;
+    ivec2 sp = clamp(ivec2(px * toDepth), ivec2(0), last);
+    float d0 = texelFetch(depthTex, sp, 0).x;
+    float tol = depthTol(sp, last, d0);
+    vec2 per = vec2(textureSize(guide, 0)) / p.dstSize;
+    ivec2 gl = textureSize(guide, 0) - 1;
+    vec2 g = at - 0.5;
+    ivec2 b = ivec2(floor(g));
+    vec2 f = g - floor(g);
+    float sum = 0.0, total = 0.0;
+    for (int y = 0; y <= 1; y++)
+        for (int x = 0; x <= 1; x++) {
+            ivec2 c = clamp(b + ivec2(x, y), ivec2(0), gl);
+            float d = abs(texelFetch(depthTex, clamp(ivec2((vec2(c) + 0.5) / per * toDepth + 0.001), ivec2(0), last), 0).x - d0);
+            if (d > tol) continue;
+            float w = (x == 1 ? f.x : 1.0 - f.x) * (y == 1 ? f.y : 1.0 - f.y);
+            sum += texelFetch(guide, c, 0).y * w;
+            total += w;
+        }
+    return total > 1e-4 ? sum / total : texelFetch(guide, picked, 0).y;
+}
+// each pixel of the game's target: the average over the guide's pixels under it
+void main() {
+    vec2 per = vec2(textureSize(guide, 0)) / p.dstSize;
+    vec2 k = clamp(ceil(per - 0.001), vec2(1.0), vec2(4.0));
+    vec2 origin = floor(gl_FragCoord.xy - vec2(p.dstX, 0.0)) * per;
+    if (p.useDepth > 0.5) {
+        ivec2 gp = pickGuide(origin + 0.5 * per);
+        colour = shadeAt(gp, origin + 0.5 * per);
+        colour.r = sharpAt(origin + 0.5 * per, gp);
+        colour.a = p.nearStep != 0.0 && nearSide(gp) ? 1.0 : 0.0;
+        return;
+    }
+    vec4 sum = vec4(0.0);
+    for (float y = 0.5; y < k.y; y += 1.0)
+        for (float x = 0.5; x < k.x; x += 1.0)
+            sum += shadeAt(ivec2(origin + vec2(x, y) / k * per));
+    colour = sum / (k.x * k.y);
+    // the stand-in's right half (written with R and A): A flags Hybrid's near side, R (useDepth) is the sharp shadow
+    colour.a = p.dstX > 0.0 && p.nearStep != 0.0 && nearSide(ivec2(origin + 0.5 * per)) ? 1.0 : 0.0;
+}
+)glsl";
+VkPipeline shadow_upsample_pipeline(VkFormat format,bool alpha) {
+    auto& u=shadowUpsample;
+    if(u.device&&u.device!=R.device)u={};
+    u.device=R.device;
+    if(!u.descriptors) {
+        VkDescriptorSetLayoutBinding bindings[3]={{0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr},
+                                                  {1,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr},
+                                                  {2,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_FRAGMENT_BIT,nullptr}};
+        VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};ci.bindingCount=3;ci.pBindings=bindings;
+        check_vk(vkCreateDescriptorSetLayout(R.device,&ci,nullptr,&u.descriptors),"create shadow upsample descriptors");
+    }
+    if(!u.layout) {
+        VkPushConstantRange push{VK_SHADER_STAGE_FRAGMENT_BIT,0,6*sizeof(float)};
+        VkPipelineLayoutCreateInfo ci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};ci.setLayoutCount=1;ci.pSetLayouts=&u.descriptors;
+        ci.pushConstantRangeCount=1;ci.pPushConstantRanges=&push;
+        check_vk(vkCreatePipelineLayout(R.device,&ci,nullptr,&u.layout),"create shadow upsample layout");
+    }
+    if(!u.sampler) {
+        VkSamplerCreateInfo ci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};ci.minFilter=ci.magFilter=VK_FILTER_NEAREST;ci.mipmapMode=VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        ci.addressModeU=ci.addressModeV=ci.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        check_vk(vkCreateSampler(R.device,&ci,nullptr,&u.sampler),"create shadow upsample sampler");
+    }
+    const uint32_t key=uint32_t(format)|(alpha?0x80000000u:0u);
+    if(auto it=u.pipelines.find(key);it!=u.pipelines.end())return it->second;
+    VkShaderModule vs=VK_NULL_HANDLE,fs=VK_NULL_HANDLE;VkPipeline result=VK_NULL_HANDLE;
+    try {
+        vs=depth_copy_module(depthCopyVertex,true);fs=depth_copy_module(shadowUpsampleFragment,false);
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        for(int i=0;i<2;++i){stages[i].sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;stages[i].stage=i?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;stages[i].module=i?fs:vs;stages[i].pName="main";}
+        VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};ia.topology=VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};vp.viewportCount=vp.scissorCount=1;
+        VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};rs.polygonMode=VK_POLYGON_MODE_FILL;rs.cullMode=VK_CULL_MODE_NONE;rs.lineWidth=1;
+        VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};ms.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo dss{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+        VkPipelineColorBlendAttachmentState blend{};
+        blend.colorWriteMask=VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|(alpha?VK_COLOR_COMPONENT_A_BIT|VK_COLOR_COMPONENT_R_BIT:0u);
+        VkPipelineColorBlendStateCreateInfo bs{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};bs.attachmentCount=1;bs.pAttachments=&blend;
+        VkDynamicState states[]={VK_DYNAMIC_STATE_VIEWPORT,VK_DYNAMIC_STATE_SCISSOR};
+        VkPipelineDynamicStateCreateInfo ds{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};ds.dynamicStateCount=2;ds.pDynamicStates=states;
+        VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        rendering.colorAttachmentCount=1;rendering.pColorAttachmentFormats=&format;
+        VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};pipeline_targets(ci,rendering);ci.stageCount=2;ci.pStages=stages;
+        ci.pVertexInputState=&vi;ci.pInputAssemblyState=&ia;ci.pViewportState=&vp;ci.pRasterizationState=&rs;ci.pMultisampleState=&ms;
+        ci.pDepthStencilState=&dss;ci.pColorBlendState=&bs;ci.pDynamicState=&ds;ci.layout=u.layout;
+        check_vk(stutter::create_graphics(R.frame, "surface_pipeline", R.device,R.pipelineCache,1,&ci,nullptr,&result, [] {
+            begin_pipeline_pending_frame();
+            present_completed_frame_while_pipeline_pending();
+        }),"create shadow upsample pipeline");
+        u.pipelines.emplace(key,result);++R.pipelineCreates;R.pipelineCacheDirty=true;R.pipelineCacheChangedFrame=R.frame;
+    } catch(...) {
+        if(result)vkDestroyPipeline(R.device,result,nullptr);
+        if(vs)vkDestroyShaderModule(R.device,vs,nullptr);if(fs)vkDestroyShaderModule(R.device,fs,nullptr);
+        throw;
+    }
+    vkDestroyShaderModule(R.device,vs,nullptr);vkDestroyShaderModule(R.device,fs,nullptr);
+    return result;
+}
+VkImageView identity_sampled_view(Surface* s) {
+    const uint32_t identity=uint32_t(VK_IMAGE_VIEW_TYPE_2D)<<12|0u|1u<<3|2u<<6|3u<<9;
+    auto found=s->sampledViews.find(identity);
+    return found!=s->sampledViews.end()?found->second:make_sampled_view(s,identity);
+}
+}
+// dstX: the pass draws dst from that column on (the full-resolution stand-in's right half, draw.cpp), A too:
+// Hybrid's near-side flag, tested nearStep guide pixels apart (0: none)
+void draw_shadow_upsample(Surface* src,Surface* guide,Surface* dst,uint32_t dstSlice,float rims,uint32_t dstX,float nearStep,Surface* depth) {
+    if(!src||!guide||!dst||!src->image||!guide->image||!dst->image||src->image==dst->image||guide->image==dst->image||dst->fmt.depth)return;
+    if(depth&&(!depth->image||depth->image==dst->image))depth=nullptr;
+    VkPipeline pipeline=shadow_upsample_pipeline(dst->fmt.pixel,dstX>0);
+    end_encoder();
+    transition_image(src,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_ACCESS_SHADER_READ_BIT);
+    if(guide!=src)transition_image(guide,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_ACCESS_SHADER_READ_BIT);
+    if(depth)transition_image(depth,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,VK_ACCESS_SHADER_READ_BIT);
+    transition_image(dst,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_COLOR_ATTACHMENT_READ_BIT|VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+    auto cmd=command_buffer();
+    VkDescriptorSet set=VK_NULL_HANDLE;
+    VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};allocation.descriptorPool=descriptor_pool();
+    allocation.descriptorSetCount=1;allocation.pSetLayouts=&shadowUpsample.descriptors;
+    check_vk(vkAllocateDescriptorSets(R.device,&allocation,&set),"allocate shadow upsample descriptors");
+    VkDescriptorImageInfo images[3]={{shadowUpsample.sampler,identity_sampled_view(src),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                     {shadowUpsample.sampler,identity_sampled_view(guide),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+                                     {shadowUpsample.sampler,identity_sampled_view(depth?depth:guide),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=set;write.dstBinding=0;write.descriptorCount=3;
+    write.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;write.pImageInfo=images;
+    vkUpdateDescriptorSets(R.device,1,&write,0,nullptr);
+    if(dstX>=dst->extent.width)return;
+    const uint32_t w=dst->extent.width-dstX,h=dst->extent.height;
+    VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    attachment.imageView=layer_view(dst,dstSlice);attachment.imageLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachment.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD;attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;  // R and A stay
+    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};rendering.renderArea={{int32_t(dstX),0},{w,h}};rendering.layerCount=1;
+    rendering.colorAttachmentCount=1;rendering.pColorAttachments=&attachment;
+    begin_pass(cmd,rendering,[&] {
+        PassBegin pass;pass.formats.colorCount=1;pass.formats.colors[0]=dst->fmt.pixel;pass.layouts[0]=dst->layout;return pass;
+    });++R.renderPassCount;
+    VkViewport viewport{float(dstX),0,float(w),float(h),0,1};VkRect2D area{{int32_t(dstX),0},{w,h}};
+    record::vkCmdSetViewport(cmd,0,1,&viewport);record::vkCmdSetScissor(cmd,0,1,&area);
+    record::vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,shadowUpsample.layout,0,1,&set,0,nullptr);
+    record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline);
+    const float params[6]={float(w),float(h),rims,float(dstX),nearStep,depth?1.0f:0.0f};
+    record::vkCmdPushConstants(cmd,shadowUpsample.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof params,params);
+    record::vkCmdDraw(cmd,3,1,0,0);
+    end_pass(cmd);
+}
 // Last resort for a scaled copy the device can neither blit nor draw: dst is cleared (depth to the far
 // plane, stencil and colour to zero) instead of aborting the game; the game redraws its targets every
 // frame, so at worst one frame shows the cleared contents. Only a whole destination is cleared, a

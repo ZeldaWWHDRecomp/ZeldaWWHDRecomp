@@ -1343,6 +1343,41 @@ void tab_graphics() {
     if (check("Full-size torchlight", render::full_light(), &v)) post_changed([v] { render::set_full_light(v); });
     help("Torches and other point lights at the screen's resolution. Off lights them at half size, as the original "
          "game does, which gives lit objects such as torches blocky, flickering outlines.");
+    // the sun shadow's softening at outlines: the game's blur, depth-aware both ways, or one-sided
+    // (render::shadow_edges, render::shadow_rims)
+    {
+        static const char* const blur[] = {"Original", "Depth-aware", "Hybrid"};
+        static const char* const blurHelp[] = {
+            "The game's own shadow blur, with a halo on both sides of an outline: outer (on the background behind "
+            "an object) and inner (on the object's own edge).",
+            "Blurs each surface only with itself: no halos. Shading stops exactly at outlines, a little flatter on "
+            "characters. Costs extra GPU time, most at high resolution scales. (Vulkan)",
+            "No outer halo; objects' edges keep an approximation of the inner one, a little wider or narrower than "
+            "the original's: rounded characters, lit edges against the sky. Costs extra GPU time, most at high "
+            "resolution scales. (Vulkan)"};
+        const char* label = "Shadow blur";
+        // Vulkan only: off on the Metal renderer (a disabled combo never opens, so its popup is never inside)
+        const bool blurOk = render::feature_available(render::kFeatureShadowBlur);
+        const int mode = !blurOk || !render::shadow_edges() ? 0 : render::shadow_rims() ? 2 : 1;
+        flow::next(flow::labeled(200, label), 30);
+        ImGui::SetNextItemWidth(200);
+        if (!blurOk) ImGui::BeginDisabled();
+        const bool open = ImGui::BeginCombo(label, blur[mode]);
+        if (!blurOk) ImGui::EndDisabled();
+        if (open) {
+            for (int i = 0; i < 3; i++) {
+                if (selectable(blur[i], i == mode) && i != mode)
+                    post_changed([i] {
+                        if (i) render::set_shadow_rims(i == 2);
+                        render::set_shadow_edges(i != 0);
+                    });
+                help(blurHelp[i]);
+                if (i == mode) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        help(blurHelp[mode]);
+    }
     flow::next(flow::check("16x anisotropic filtering"), 30);
     if (check("16x anisotropic filtering", render::aniso(), &v, render::feature_available(render::kFeatureAniso)))
         post_changed([v] { render::set_aniso(v); });

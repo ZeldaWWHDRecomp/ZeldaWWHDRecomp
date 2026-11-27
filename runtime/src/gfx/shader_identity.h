@@ -13,9 +13,18 @@ namespace gfx {
 // targets they draw keep the console's size at any internal resolution (issue #307).
 // BloomHelper: the copy passes that also draw the chain's levels (PS 44FD7E00, and 44FD8500, which
 // draws the screen buffers too); they keep the chain's claim but never make one.
-enum class ProgramKind { Other, DepthDownsample, OcclusionPixel, OcclusionVertex, SunShadowMask, BloomChain, BloomHelper, PointLight };
+// SunChain: the Gaussian (PS 44B3AB00, 44B39A00) and the copy (44B43800) the game softens the sun
+// shadow mask with; they also serve other buffers, so the renderers follow which targets hold the
+// mask (render::shadow_edges, gfx/area_sample.h)
+enum class ProgramKind { Other, DepthDownsample, OcclusionPixel, OcclusionVertex, SunShadowMask, BloomChain, BloomHelper, PointLight, SunChain };
 inline ProgramKind program_kind(const void* bytes, uint32_t size, bool vertex) {
     if (!bytes) return ProgramKind::Other;
+    if (!vertex && size == 448) {
+        const uint64_t hash = area_sample::program_hash(bytes, size);
+        if (hash == 0x51a7ccdf69184627ull || hash == 0x16285301a96cbf8dull) return ProgramKind::SunChain;
+    }
+    if (!vertex && size == 160 && area_sample::program_hash(bytes, size) == 0x7fc38db39517a6bcull)
+        return ProgramKind::SunChain;
     if (vertex && size == 384 && area_sample::program_hash(bytes, size) == 0xd279c909832a6f45ull)
         return ProgramKind::OcclusionVertex;
     if (!vertex && size == 416) {

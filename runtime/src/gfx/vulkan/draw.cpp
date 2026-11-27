@@ -23,6 +23,7 @@
 #include "../stereo_projection.h"
 #include "../sampler_lod_bias.h"
 #include "../artistic_mips.h"
+#include "../area_sample.h"
 #include "sampler_filtering.h"
 #include "deferred_dispatch.h"
 #ifdef WWHD_NATIVE_DRAW
@@ -174,6 +175,8 @@ bool record_indirect() {
 }
 #endif
 bool aoPrivateReplay = false;
+// inside the second draw of a step of the sun shadow mask's chain, into its twin (shadow_twin)
+bool shadowTwinReplay = false;
 struct AoPrivate {
   uint32_t source = 0;
   uint64_t frame = ~0ull;
@@ -794,6 +797,16 @@ struct PipelineKeyHash {
 static_assert(sizeof(PipelineKey) % 8 == 0);
 static_assert(sizeof(PipelineKey) == 208, "update the persisted pipeline recipe schema");
 std::unordered_map<PipelineKey, Pipeline, PipelineKeyHash> pipelines;
+// CB_TARGET_MASK, except that the second draw of a step of the sun shadow mask's softening chain, into its twin
+// (shadow_twin), also writes red and alpha: the depth key travels in A and R from step to step
+// (gfx/area_sample.h), and the game masks alpha off some of them and red off the mask
+static uint32_t target_mask(const uint32_t* r, const vk::Shader* ps) {
+  uint32_t mask = r[REGADDR::CB_TARGET_MASK];
+  if (shadowTwinReplay && (mask & 7) &&
+      (ps->kind == gfx::ProgramKind::SunShadowMask || ps->kind == gfx::ProgramKind::SunChain))
+    mask |= 9;
+  return mask;
+}
 // covSlot (60 fps (generated), hud_coverage.h): the colour attachment the pixel shader's coverage variant
 // writes (0: none). It is kept in the key's reserved word, so the key (and the persisted recipes, which
 // never hold such a pipeline) keeps its size; that attachment's blend and mask are the coverage's own.
@@ -825,7 +838,7 @@ PipelineKey pipeline_key(const uint32_t* r, const vk::Shader* vs, const vk::Shad
       key.blend[i] = raw & (raw & (1u << 29) ? 0x3FFF1FFFu : 0x00001FFFu);
     }
   key.colorControl = (colorControl & 0x00FF0000u) | (blending << 8);  // ROP, blend enables
-  const uint32_t targetMask = r[REGADDR::CB_TARGET_MASK] & ~clearMask;
+  const uint32_t targetMask = target_mask(r, ps) & ~clearMask;
   key.targetMask = ncolor >= 8 ? targetMask : targetMask & ((1u << (4 * ncolor)) - 1);
   if (depth) {
     key.depthFormat = uint32_t(depth->fmt.pixel);
@@ -1463,9 +1476,10 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
                (r[REGADDR::DB_STENCILREFMASK_BF] >> 16) & 255,
                r[REGADDR::DB_STENCILREFMASK_BF] & 255};
   std::array<VkPipelineColorBlendAttachmentState, 8> cb{};
+  const uint32_t targetMask = target_mask(r, ps) & ~clearMask;
   for (uint32_t i = 0; i < ncolor; i++) {
     auto &b = cb[i];
-    b.colorWriteMask = ((r[REGADDR::CB_TARGET_MASK] & ~clearMask) >> (4 * i)) & 15;
+    b.colorWriteMask = (targetMask >> (4 * i)) & 15;
     b.blendEnable = colors[i] && colors[i]->fmt.kind == FormatInfo::FLOAT &&
                     ((r[REGADDR::CB_COLOR_CONTROL] >> (8 + i)) & 1) && !((clearMask >> (4 * i)) & 15);
     LATTE_CB_BLENDN_CONTROL raw;
@@ -2438,6 +2452,7 @@ struct DrawTargets {
   uint32_t depthSlice = 0, width = 0, height = 0;
   float sx = 1, sy = 1;
   uint8_t activeColors = 0;  // GetActiveColorBufferMask: it also reads the (dynamic) scissor, see continued_reason
+  bool sunChain = false;  // a step of the sun shadow mask's chain, drawn again into its twins (shadow_twin)
   bool same(const DrawTargets& o) const {
     return colors == o.colors && slices == o.slices && depth == o.depth && target == o.target && depthSlice == o.depthSlice &&
            width == o.width && height == o.height && !std::memcmp(&sx, &o.sx, 4) && !std::memcmp(&sy, &o.sy, 4);
@@ -2457,7 +2472,7 @@ struct ContinuedDraw {
   uint32_t prim = 0;
   VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
   int aoMode = 0;
-  bool aoHires = false, aniso = false;
+  bool aoHires = false, aniso = false, shadowEdges = false;
   LatteFetchShader* fs = nullptr;
   uint64_t fsKey = 0;
   vk::Shader *vs = nullptr, *ps = nullptr;
@@ -2681,6 +2696,364 @@ void report_continued_stats() {
   st.totalVerified = totalVerified;
   st.mismatchKinds = kinds;
 }
+// Shadow blur (render::shadow_edges) latched once per frame: a toggle from the Graphics menu (another thread)
+// never splits a frame between the full-read shader variant and releasing the twins.
+static uint64_t g_shadowEdgesFrame = ~0ull;
+static bool g_shadowEdgesLatched = false;
+static bool frame_shadow_edges() {
+  if (g_shadowEdgesFrame != R.frame) {
+    g_shadowEdgesFrame = R.frame;
+    g_shadowEdgesLatched = render::shadow_edges();
+  }
+  return g_shadowEdgesLatched;
+}
+// Depth-aware shadow softening (render::shadow_edges, gfx/area_sample.h): the render targets that hold
+// the sun shadow mask or a step of its softening chain this frame (addresses without swizzle bits).
+// The chain's programs also blur and copy other buffers; a draw is a step of the chain when its source
+// is and it draws a buffer smaller than the scene (a copy of the mask into the scene only reads it).
+// A step whose source has no twin this frame (its draw was skipped, e.g. while its pipeline compiles)
+// ends the chain: the blur would weigh the game's buffer by whatever is left in its A.
+static std::vector<uint32_t> g_sunChain;
+static uint64_t g_sunChainFrame = ~0ull;
+static uint32_t sun_chain_key(uint32_t addr) { return addr & ~0x700u; }
+static bool sun_chain_has(uint32_t addr) {
+  return g_sunChainFrame == R.frame &&
+         std::find(g_sunChain.begin(), g_sunChain.end(), sun_chain_key(addr)) != g_sunChain.end();
+}
+static bool twin_drawn(uint32_t addr);
+// true: the draw is the mask or a step of its chain. A mask whose twin translation gets no depth key
+// (Shader::edgeBlur) starts no chain: the blur would weigh its samples by the AO left in A.
+static bool sun_chain_track(const uint32_t* r, const vk::Shader* ps, Surface* const* colors) {
+  if (g_sunChainFrame != R.frame) {
+    g_sunChain.clear();
+    g_sunChainFrame = R.frame;
+  }
+  const bool chain = colors[0] && colors[0]->width < 1280 &&
+                     ((ps->kind == gfx::ProgramKind::SunShadowMask && ps->edgeBlur) ||
+                      (ps->kind == gfx::ProgramKind::SunChain &&
+                       sun_chain_has(r[REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + 2] << 8) &&
+                       twin_drawn(r[REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + 2] << 8)));
+  for (int i = 0; i < 8; i++) {
+    if (!colors[i]) continue;
+    const auto at = std::find(g_sunChain.begin(), g_sunChain.end(), sun_chain_key(colors[i]->addr));
+    if (chain && at == g_sunChain.end()) g_sunChain.push_back(sun_chain_key(colors[i]->addr));
+    else if (!chain && at != g_sunChain.end()) g_sunChain.erase(at);
+  }
+  return chain;
+}
+
+// Twins: each draw of the chain is drawn a second time (shadowTwinReplay) into a private copy of its target
+// (shadow_twin sizes it), reading the twins of its sources, with the depth key and the edge-aware blur.
+// The game's own targets keep their size and the game's sums, so the ambient occlusion in R is the game's;
+// draw_shadow_merge brings the twin's G and B (the shadow) back into them once (flush_shadow_merges).
+struct ShadowTwin {
+  uint32_t key = 0;
+  int eye = 0;
+  uint64_t frame = ~0ull;  // the frame the chain last drew it
+  uint64_t used = 0;       // the frame a step last drew into it (evict_shadow_twins)
+  Surface surface;
+  std::vector<Surface> kept;  // dynamic resolution (dynres.h): its images of the last other sizes
+};
+static std::vector<std::unique_ptr<ShadowTwin>> g_shadowTwins;
+// Each of the game's targets takes its twin once, from its last step, just before the first draw outside the
+// chain (flush_shadow_merges). The game's own steps between read only the game's targets, whose G and B that
+// merge replaces and whose R and A never depend on them (the game's steps blur each channel alone).
+// In stereo each eye merges its own, in its own command stream (eye 1's are held until stereo_flush).
+struct PendingMerge {
+  Surface* twin;
+  Surface* dst;
+  uint32_t slice;
+  uint64_t frame;
+  int eye;
+};
+static std::vector<PendingMerge> g_pendingMerges;
+static void defer_shadow_merge(Surface* twin, Surface* dst, uint32_t slice) {
+  for (auto& m : g_pendingMerges)
+    if (m.dst == dst && m.slice == slice && m.eye == stereoEye) {
+      m = {twin, dst, slice, R.frame, stereoEye};
+      return;
+    }
+  g_pendingMerges.push_back({twin, dst, slice, R.frame, stereoEye});
+}
+static void flush_shadow_merges() {
+  if (g_pendingMerges.empty()) return;
+  std::erase_if(g_pendingMerges, [](const PendingMerge& m) {
+    if (m.eye != stereoEye) return m.frame != R.frame;
+    if (m.frame == R.frame) draw_shadow_merge(m.twin, m.dst, m.slice);
+    return true;
+  });
+}
+static void destroy_twin(ShadowTwin& t) {
+  std::erase_if(g_pendingMerges, [&](const PendingMerge& m) { return m.twin == &t.surface; });
+  // the last pass's targets outlive the pass (clouds.cpp reads them): none may name a released twin,
+  // nor may the other eye's saved pass in stereo
+  for (auto& c : pass_state().colors)
+    if (c == &t.surface) c = nullptr;
+  if (pass_state().depth == &t.surface) pass_state().depth = nullptr;
+  stereo_forget_pass_surface(&t.surface);
+  destroy_surface_image(&t.surface);
+  for (auto& k : t.kept) destroy_surface_image(&k);
+  t.kept.clear();
+}
+static ShadowTwin* find_twin(uint32_t addr) {
+  for (auto& t : g_shadowTwins)
+    if (t->key == sun_chain_key(addr) && t->eye == stereoEye) return t.get();
+  return nullptr;
+}
+// the twin a step of the chain draws into: the full-size steps at kShadowTwinScale of the scene's
+// resolution, so each pixel has its own depth and shrinking does not mix an object into its background. The
+// steps smaller than the mask (240x135, 480x270) get at most 4 pixels per console texel, which the edge-aware
+// blur samples one by one (it takes up to 8x8 of each; spaced out further they made a faint grid at 3x). 8
+// cost 1.2 to 1.6 ms more a frame at 3x and changed only a pixel or two along outlines.
+static constexpr float kTwinTexelPixels = 4.0f;
+static Surface* shadow_twin(Surface* game) {
+  ShadowTwin* t = find_twin(game->addr);
+  if (!t) {
+    g_shadowTwins.push_back(std::make_unique<ShadowTwin>());
+    t = g_shadowTwins.back().get();
+    t->key = sun_chain_key(game->addr);
+    t->eye = stereoEye;
+  }
+  t->used = R.frame;
+  const float chain = 1280.0f / float(game->width);
+  const float scale = std::min(game->sx, game->sy);
+  // the full-size steps at kShadowTwinScale of the scene's resolution: the full-resolution read (full_shadow_image)
+  // matches each scene pixel to the twin pixel on its own surface
+  const float f = game->width < 960 ? std::min(chain, std::max(kTwinTexelPixels, scale) / scale)
+                                    : chain * gfx::area_sample::kShadowTwinScale;
+  const VkExtent3D extent{uint32_t(std::ceil(float(game->extent.width) * f - 0.01f)),
+                          uint32_t(std::ceil(float(game->extent.height) * f - 0.01f)), 1};
+  const auto limit = R.properties.limits.maxImageDimension2D;
+  if (!extent.width || !extent.height || extent.width > limit || extent.height > limit)
+    exception_report::raise("shadow twin dimensions exceed device limits");
+  Surface& d = t->surface;
+  if (!d.image || d.width != game->width || d.height != game->height || d.extent.width != extent.width ||
+      d.extent.height != extent.height || d.fmt.pixel != game->fmt.pixel) {
+    end_encoder();
+    // dynamic resolution: the images of the last two other sizes are kept, and one of the needed size is
+    // taken back instead of creating it (its contents are drawn again each frame)
+    auto& kept = t->kept;
+    if (!dynres::on()) {
+      for (auto& k : kept) destroy_surface_image(&k);
+      kept.clear();
+    } else {
+      const auto at = std::find_if(kept.begin(), kept.end(), [&](const Surface& k) {
+        return k.image && k.width == game->width && k.height == game->height && k.extent.width == extent.width &&
+               k.extent.height == extent.height && k.fmt.pixel == game->fmt.pixel;
+      });
+      Surface take;
+      const bool found = at != kept.end();
+      if (found) {
+        take = *at;
+        kept.erase(at);
+      }
+      if (d.image) {
+        kept.insert(kept.begin(), d);
+        d.image = VK_NULL_HANDLE; d.memory = VK_NULL_HANDLE; d.view = VK_NULL_HANDLE;
+        d.layerViews.clear(); d.sampledViews.clear(); d.mipChain.reset(); d.allocationBytes = 0;
+      }
+      while (kept.size() > 2) { destroy_surface_image(&kept.back()); kept.pop_back(); }
+      if (found) {
+        d = take;
+        return &d;
+      }
+    }
+    destroy_surface_image(&d);
+    d = *game;
+    d.spares.clear();
+    d.mipChain.reset();
+    d.image = VK_NULL_HANDLE; d.memory = VK_NULL_HANDLE; d.view = VK_NULL_HANDLE;
+    d.layerViews.clear(); d.sampledViews.clear(); d.guestLayout.reset();
+    d.addr = d.mipAddr = 0;
+    d.slices = d.mips = 1;
+    d.dim = uint32_t(Latte::E_DIM::DIM_2D);
+    d.gpuWritten = true;  // private render image: never upload guest address 0
+    d.dirty = false;
+    create_surface_image(&d, false, extent);
+  }
+  return &d;  // its frame is set once the step is drawn (draw)
+}
+// the twin of a texture, if the chain drew it this frame
+static Surface* drawn_twin(const Surface* s) {
+  ShadowTwin* t = find_twin(s->addr);
+  return t && t->frame == R.frame && t->surface.image ? &t->surface : nullptr;
+}
+// the source twin the last twin draw read on unit 0 (resolve_texture), for the enlarging step (the full read)
+static Surface* g_twinStepSource = nullptr;
+// the scene depth the mask's twin read this frame, per eye (the full-resolution read matches pixels by it)
+static Surface* g_maskDepth[2] = {};
+static uint64_t g_maskDepthFrame[2] = {~0ull, ~0ull};
+// a full-resolution twin the chain drew this frame (the light buffer's, 960x540 on the console): its key
+static Surface* full_twin() {
+  for (auto& t : g_shadowTwins)
+    if (t->eye == stereoEye && t->frame == R.frame && t->surface.image && t->surface.width >= 960) return &t->surface;
+  return nullptr;
+}
+static bool twin_drawn(uint32_t addr) {
+  const ShadowTwin* t = find_twin(addr);
+  return t && t->frame == R.frame && t->surface.image;
+}
+// Depth-aware and Hybrid: the lit materials take the shadow at full resolution. They read the light buffer at
+// level 0 (the sharp shadow) and at a LOD near 1 (the soft one, from the 480x270 level, which their bilinear read
+// spread ~2.7 screen pixels across outlines); both reads take the shadow's channels (G, B). Those draws get a
+// two-level stand-in twice the scene's width instead. Left half: the game's levels blitted to the scene's
+// resolution (linear: at each pixel the value the material's own bilinear read would take). Right half of level 0,
+// per scene pixel (draw_shadow_upsample with the scene depth): G and B the soft shadow, R the sharp one, both from
+// the twin pixels on the pixel's own surface. Their shader variant (Shader::fullShadow) reads the left half, and
+// the shadow's components from the right half. Hybrid: a pixel on the near side of an outline (only farther
+// surfaces within two of the material's texels) keeps the game's read; the right half's A flags it.
+struct FullShadow {
+  uint64_t frame = ~0ull;  // the frame the enlarging step recorded its inputs
+  uint32_t mipKey = 0;     // the light buffer's level 1 target (sun_chain_key)
+  Surface* source = nullptr;
+  Surface* guide = nullptr;
+  float rims = 0.0f;
+  float step = 0.0f;       // the guide's pixels per texel of the level the materials read
+  Surface* depth = nullptr;  // the scene depth the mask read: the stand-in's right half at its size
+  uint64_t builtFrame = ~0ull;
+  const Surface* builtFrom = nullptr;
+  Surface image;
+};
+static FullShadow g_fullShadow[2];  // per eye
+static Surface* full_shadow_image(Surface* c) {
+  FullShadow& f = g_fullShadow[stereoEye & 1];
+  if (f.frame != R.frame || !f.source || !f.guide || !f.guide->image || !c || !c->image || c->fmt.depth)
+    return nullptr;
+  Surface& d = f.image;
+  if (f.builtFrame == R.frame && f.builtFrom == c && d.image) return &d;
+  // the right half at the scene depth's size (the twins are smaller), each pixel taking the twin pixel on its own
+  // surface (draw_shadow_upsample with depth)
+  Surface* depth = f.depth && f.depth->image && f.depth->extent.width > f.guide->extent.width ? f.depth : nullptr;
+  // with depth the right half also carries the sharp shadow, from the light buffer's own twin (its final level 0)
+  Surface* guide = f.guide;
+  if (depth)
+    if (Surface* own = drawn_twin(c); own && own->extent.width == f.guide->extent.width) guide = own;
+  const uint32_t half = depth ? depth->extent.width : f.guide->extent.width;
+  const VkExtent3D extent{2 * half, depth ? depth->extent.height : f.guide->extent.height, 1};
+  if (!d.image || d.extent.width != extent.width || d.extent.height != extent.height || d.fmt.pixel != c->fmt.pixel) {
+    end_encoder();
+    for (auto& p : pass_state().colors)
+      if (p == &d) p = nullptr;
+    destroy_surface_image(&d);
+    d = Surface{};
+    d.width = c->width; d.height = c->height; d.slices = 1; d.mips = 2;
+    d.format = c->format; d.dim = c->dim; d.fmt = c->fmt;
+    d.gpuWritten = true;
+    create_surface_image(&d, false, extent);
+    LOG("[shadow full] stand-in %ux%u (2 levels) for the light buffer %ux%u", extent.width, extent.height,
+        c->extent.width, c->extent.height);
+  }
+  end_encoder();
+  transition_image(c, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+  transition_image(&d, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+  VkCommandBuffer cmd = command_buffer();
+  for (uint32_t l = 0; l < 2; l++) {
+    // a light buffer without its levels (no mip chain): level 1 from its level 0, where its own read clamped
+    const uint32_t from = std::min(l, std::max(c->mips, 1u) - 1);
+    VkImageBlit b{};
+    b.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, from, 0, 1};
+    b.srcOffsets[1] = {int32_t(std::max(c->extent.width >> from, 1u)), int32_t(std::max(c->extent.height >> from, 1u)), 1};
+    b.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, l, 0, 1};
+    b.dstOffsets[1] = {int32_t(std::max(half >> l, 1u)), int32_t(std::max(d.extent.height >> l, 1u)), 1};
+    record::vkCmdBlitImage(cmd, c->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, d.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           1, &b, VK_FILTER_LINEAR);
+  }
+  transition_image(c, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                   VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+  draw_shadow_upsample(f.source, guide, &d, 0, f.rims, half, f.rims > 0.0f ? f.step : 0.0f, depth);
+  f.builtFrame = R.frame;
+  f.builtFrom = c;
+  return &d;
+}
+// the variant a pixel shader takes when one of its units reads the light buffer (Shader::fullShadow), or 0
+static uint32_t full_shadow_variant(const uint32_t* r) {
+  if (!frame_shadow_edges() || shadowTwinReplay || aoPrivateReplay) return 0;
+  const FullShadow& f = g_fullShadow[stereoEye & 1];
+  if (f.frame != R.frame || !f.source || !f.guide || !f.guide->image) return 0;
+  for (uint32_t unit = 0; unit < 18; unit++) {
+    const uint32_t* w = r + REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + unit * 7;
+    const uint32_t mip = w[3] << 8;
+    if (!w[2] || !mip || sun_chain_key(mip) != f.mipKey) continue;
+    Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N w4;
+    memcpy(&w4, &w[4], 4);
+    const uint32_t sel[4] = {uint32_t(w4.get_DST_SEL_X()), uint32_t(w4.get_DST_SEL_Y()), uint32_t(w4.get_DST_SEL_Z()),
+                             uint32_t(w4.get_DST_SEL_W())};
+    uint32_t mask = 0, flag = 0, green = 0, red = 0;
+    for (uint32_t i = 0; i < 4; i++) {
+      if (sel[i] == 1 || sel[i] == 2) mask |= 1u << i;  // G and B: the shadow
+      if (sel[i] == 3 && !flag) flag = i + 1;           // A: the right half's near-side flag
+      if (sel[i] == 1 && !green) green = i + 1;          // G at level 0: the sharp shadow
+      if (sel[i] == 0 && !red) red = i + 1;              // R: the right half's sharp shadow (with depth)
+    }
+    // smaller twins (the right half at the scene depth's size): the level-0 read's G from the right half's R
+    const bool sharp = f.depth && f.depth->image && f.depth->extent.width > f.guide->extent.width && green && red;
+    return mask ? (unit + 1) | mask << 8 | flag << 12 | (sharp ? green << 16 | red << 20 : 0u) : 0;
+  }
+  return 0;
+}
+// an eye's full-read state names its twins: it goes with them, and so does the stand-in
+static void release_full_shadow(int eye) {
+  FullShadow& f = g_fullShadow[eye & 1];
+  for (auto& p : pass_state().colors)
+    if (p == &f.image) p = nullptr;
+  destroy_surface_image(&f.image);
+  f = FullShadow{};
+  g_maskDepth[eye & 1] = nullptr;
+  g_maskDepthFrame[eye & 1] = ~0ull;
+}
+static void release_shadow_twins() {
+  if (g_shadowTwins.empty() && !g_fullShadow[0].image.image && !g_fullShadow[1].image.image) return;
+  end_encoder();
+  for (auto& t : g_shadowTwins) destroy_twin(*t);
+  g_shadowTwins.clear();
+  release_full_shadow(0);
+  release_full_shadow(1);
+}
+// once a frame: the twins no step drew into for a while (a scene without the sun's shadow) are released,
+// and the kept sizes once dynamic resolution is off
+static void evict_shadow_twins() {
+  static uint64_t swept = ~0ull;
+  if (swept == R.frame) return;
+  swept = R.frame;
+  constexpr uint64_t kIdleFrames = 300;
+  bool ended = false;
+  for (size_t i = 0; i < g_shadowTwins.size();) {
+    ShadowTwin& t = *g_shadowTwins[i];
+    const bool idle = R.frame - t.used > kIdleFrames;
+    if (!idle && (dynres::on() || t.kept.empty())) { ++i; continue; }
+    if (!ended) { end_encoder(); ended = true; }
+    if (!idle) {
+      for (auto& k : t.kept) destroy_surface_image(&k);
+      t.kept.clear();
+      ++i;
+      continue;
+    }
+    destroy_twin(t);
+    g_shadowTwins.erase(g_shadowTwins.begin() + long(i));
+  }
+  if (ended && g_shadowTwins.empty()) {
+    release_full_shadow(0);
+    release_full_shadow(1);
+  }
+}
+// stereo off (stereo_release_ao): eye 1's twins
+static void release_eye_twins(int eye) {
+  for (size_t i = 0; i < g_shadowTwins.size();)
+    if (g_shadowTwins[i]->eye == eye) {
+      destroy_twin(*g_shadowTwins[i]);
+      g_shadowTwins.erase(g_shadowTwins.begin() + long(i));
+    } else {
+      ++i;
+    }
+  release_full_shadow(eye);
+}
+// in a twin's draw, the shadow mask's and the chain's rewritten programs get a negative tex0 scale, which asks
+// them for the depth key and the edge-aware blur (gfx/area_sample.h)
+static bool sun_chain_draw(const vk::Shader* sh, uint32_t unit) {
+  return shadowTwinReplay && !sh->vertex && unit == 0 && sh->edgeBlur &&
+         (sh->kind == gfx::ProgramKind::SunShadowMask || sh->kind == gfx::ProgramKind::SunChain);
+}
+
 // Render targets of a draw (both paths); false: the draw has no target.
 bool resolve_targets(const uint32_t* r, vk::Shader* ps, DrawTargets& t) {
   t = {};
@@ -2697,6 +3070,12 @@ bool resolve_targets(const uint32_t* r, vk::Shader* ps, DrawTargets& t) {
   // looked up before it still have the eye size; looked up again, they are rescaled
   if (eyeSize != stereo_eye_size_generation()) return resolve_targets(r, ps, t);
   if (t.depth && t.depth->width == 1280 && t.depth->height == 720) R.mainDepthAddr = t.depth->addr;
+  if (!frame_shadow_edges()) {
+    release_shadow_twins();
+  } else if (!aoPrivateReplay && !shadowTwinReplay) {
+    evict_shadow_twins();
+    t.sunChain = sun_chain_track(r, ps, t.colors.data());
+  }
   auto& colors = t.colors;
   auto& depth = t.depth;
   const uint32_t guestWidth = colors[0] ? colors[0]->width : 0;
@@ -2711,6 +3090,12 @@ bool resolve_targets(const uint32_t* r, vk::Shader* ps, DrawTargets& t) {
       t.depthSlice = 0;
     }
   }
+  if (shadowTwinReplay)
+    for (int i = 0; i < 8; i++)
+      if (colors[i]) {
+        colors[i] = shadow_twin(colors[i]);
+        t.slices[i] = 0;
+      }
   Surface *target = depth;
   for (auto *c : colors)
     if (c) {
@@ -2742,12 +3127,12 @@ bool resolve_targets(const uint32_t* r, vk::Shader* ps, DrawTargets& t) {
 // native_pass.h (WWHD_NATIVE_PASS_TRUST): the targets of the open described pass. Its every target word matched the
 // description at this draw (note_draw), so the registers resolve_targets reads for the attachments are those of the
 // pass's previous draw; the rest it depends on is the key (frame, surface epoch: surfaces created, replaced or
-// uploaded; eye size; the active colour mask, whether depth is active, and the pixel program's size claim). Not for the AO replay (private
-// targets) or with stereo.
+// uploaded; eye size; the active colour mask, whether depth is active, and the pixel program's size claim). Not for the AO or shadow twin
+// replays (private targets) or with stereo.
 bool pass_trusted_targets(const uint32_t* r, vk::Shader* ps, DrawTargets& t) {
   const int mode = native_pass::trust_mode();
   uint32_t passId = 0;
-  if (!mode || aoPrivateReplay || stereo::frame.mode != stereo::Off || !native_pass::trusted(passId, r))
+  if (!mode || aoPrivateReplay || shadowTwinReplay || stereo::frame.mode != stereo::Off || !native_pass::trusted(passId, r))
     return resolve_targets(r, ps, t);
   struct Cached {
     bool valid = false;
@@ -2855,7 +3240,23 @@ Surface* resolve_texture(const uint32_t* r, vk::Shader* sh, uint32_t unit, bool*
     s = &ao.color;
     if (substituted) *substituted = true;
   }
+  // the second draw of a step of the sun shadow mask's chain reads the twins the chain drew (shadow_twin)
+  if (shadowTwinReplay && !sh->vertex)
+    if (Surface* twin = drawn_twin(s)) {
+      if (unit == 0) g_twinStepSource = twin;
+      s = twin;
+    }
+  if (shadowTwinReplay && !sh->vertex && unit == 0 && sh->kind == gfx::ProgramKind::SunShadowMask) {
+    g_maskDepth[stereoEye & 1] = s;
+    g_maskDepthFrame[stereoEye & 1] = R.frame;
+  }
   upload_surface(s);
+  // a lit material's variant reads the full-resolution stand-in of the light buffer (full_shadow_image)
+  if (!sh->vertex && sh->fullShadow && unit + 1 == (sh->fullShadow & 0xFF) && !shadowTwinReplay && !aoPrivateReplay)
+    if (Surface* full = full_shadow_image(s)) {
+      s = full;
+      if (substituted) *substituted = true;
+    }
   return s;
 }
 bool aliases_target(const Surface* s, const std::array<Surface*, 8>& colors, const Surface* depth) {
@@ -3381,6 +3782,12 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
       sh->uniforms.offset_remapped >= 0 && size_t(sh->uniforms.offset_remapped) < supportUniforms.size())
     render::scale_bloom_uniforms(supportUniforms.data() + sh->uniforms.offset_remapped,
                                 supportUniforms.size() - sh->uniforms.offset_remapped);
+  // Hybrid shadow blur for the softening chain's blurs (area_sample::rewrite_edge_blur): the weight a sample
+  // behind the pixel's surface keeps, 0 unless hybrid, live from the Graphics menu
+  if (!sh->vertex && sh->rimsOffset >= 0 && size_t(sh->rimsOffset) + 4 <= supportUniforms.size()) {
+    const float weight = render::shadow_rims_weight();
+    memcpy(supportUniforms.data() + sh->rimsOffset, &weight, sizeof weight);
+  }
   // Metal AO mode 2 tiles noise per 960x540 output pixel rather than 640x360.
   const int remapped = sh->uniforms.offset_remapped;
   if (sunShadow && eyeOffset != 0 && remapped >= 0 &&
@@ -3469,7 +3876,8 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
 #endif
     int scaleOffset = sh->uniforms.offset_texScale[unit];
     if (scaleOffset >= 0 && size_t(scaleOffset) + 8 <= supportUniforms.size()) {
-      const float scale[] = {s->sx, s->sy};
+      const float sign = sun_chain_draw(sh, unit) ? -1.0f : 1.0f;
+      const float scale[] = {s->sx * sign, s->sy * sign};
       memcpy(supportUniforms.data() + scaleOffset, scale, sizeof scale);
     }
     // hand-drawn mip levels where the shader applies the bias (MoltenVK): the resolution-aware part on top
@@ -3534,7 +3942,8 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
     bool aliases = aliases_target(s, colors, depth);
     int scaleOffset = sh->uniforms.offset_texScale[unit];
     if (scaleOffset >= 0 && size_t(scaleOffset) + 8 <= supportUniforms.size()) {
-      const float scale[] = {s->sx, s->sy};
+      const float sign = sun_chain_draw(sh, unit) ? -1.0f : 1.0f;
+      const float scale[] = {s->sx * sign, s->sy * sign};
       memcpy(supportUniforms.data() + scaleOffset, scale, sizeof scale);
     }
     VkImageView sampledView =
@@ -3817,7 +4226,9 @@ bool verify_continued(const uint32_t* r, uint32_t prim, bool partial = false, bo
   auto* fs = vk::get_fetch_shader(r, &fsKey, R.frame);
   vk::Shader* vs = nullptr;
   vk::Shader* ps = nullptr;
+  vk::g_fullShadowVariant = full_shadow_variant(r);
   if (fs) vk::translate_stages(r, fs, fsKey, R.frame, g_shader_state_gen, vs, ps);
+  vk::g_fullShadowVariant = 0;
   DrawTargets t;
   if (fs != c.fs || fsKey != c.fsKey) kind = 0;
   else if (vs != c.vs || !vs || !vs->ready()) kind = 1;
@@ -3878,7 +4289,9 @@ ContinuedReason continued_reason(const uint32_t* r, uint32_t prim) {
   if (c.stateVersion != gx2::g_full_state_version) return kRegisters;
   if (c.surfaceEpoch != g_surface_epoch) return kSurfaces;
   if (c.prim != prim) return kPrimitive;
-  if (c.aoMode != ao_mode() || c.aoHires != ao_hires_enabled() || c.aniso != aniso_enabled()) return kSettings;
+  if (c.aoMode != ao_mode() || c.aoHires != ao_hires_enabled() || c.aniso != aniso_enabled() ||
+      c.shadowEdges != frame_shadow_edges())
+    return kSettings;
   // the scissor is a continued (dynamic) word, but GetActiveColorBufferMask drops the colour buffers
   // smaller than it: a new scissor continues only while it leaves the same targets active
   if (r[REGADDR::PA_SC_GENERIC_SCISSOR_BR] != c.scissorBR) {
@@ -3895,8 +4308,8 @@ ContinuedReason continued_reason(const uint32_t* r, uint32_t prim) {
 bool partial_candidate(uint32_t prim) {
   const auto& c = continued_eyes()[stereoEye];
   return c.surfaceEpoch == g_surface_epoch && c.prim == prim && c.aoMode == ao_mode() &&
-         c.aoHires == ao_hires_enabled() && c.aniso == aniso_enabled() && c.pipeline &&
-         !(partial_groups()[stereoEye] >> gx2::kSgOther & 1);
+         c.aoHires == ao_hires_enabled() && c.aniso == aniso_enabled() && c.shadowEdges == frame_shadow_edges() &&
+         c.pipeline && !(partial_groups()[stereoEye] >> gx2::kSgOther & 1);
 }
 } // namespace
 #if defined(WWHD_DECOMP_FAST) && defined(WWHD_NATIVE_DRAW)
@@ -3943,11 +4356,25 @@ void stereo_release_ao() {
   destroy_surface_image(&ao.color);
   destroy_surface_image(&ao.depth);
   ao = {};
+  release_eye_twins(1);
 }
 void reset_ao_private_cache() {
   for (auto& ao : aoPrivateEyes) {
     ao.frame = ~0ull;
     ao.source = 0;
+  }
+  g_shadowEdgesFrame = ~0ull;
+  g_sunChain.clear();
+  g_sunChainFrame = ~0ull;
+  g_pendingMerges.clear();
+  g_twinStepSource = nullptr;
+  for (auto& t : g_shadowTwins) t->frame = ~0ull;
+  for (int e = 0; e < 2; ++e) {
+    g_fullShadow[e].frame = g_fullShadow[e].builtFrame = ~0ull;
+    g_fullShadow[e].source = g_fullShadow[e].guide = g_fullShadow[e].depth = nullptr;
+    g_fullShadow[e].builtFrom = nullptr;
+    g_maskDepth[e] = nullptr;
+    g_maskDepthFrame[e] = ~0ull;
   }
 }
 void drain_pending_guest_pipelines() {
@@ -4215,6 +4642,7 @@ native_draw::J3dCount j3d_check(const J3dEntry& e, const uint32_t* r, uint32_t p
   if (e.prim != prim) return kJ3dPrimitive;
   const ContinuedDraw& c = e.state;
   if (c.aoMode != ao_mode() || c.aoHires != ao_hires_enabled() || c.aniso != aniso_enabled() ||
+      c.shadowEdges != frame_shadow_edges() ||
       e.salt[0] != R.vertexFormats.shader_salt() || e.salt[1] != R.vertexDiagnostics.shader_salt() ||
       e.salt[2] != uint64_t(R.clipEmulation) || e.salt[3] != uint64_t(mods::cemu::has_shaders()))
     return kJ3dSettings;
@@ -4370,12 +4798,12 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   const StereoShaders* shadersIn = backdropReplay ? backdropReplay : std::exchange(stereoShadersIn, nullptr);
   // Record exact upload slices/descriptor bindings while resolving the original
   // draw. The normal off path records nothing and the stereo snapshot is reused.
-  if(!shadersOut && !stereoEye && !aoPrivateReplay && gamepad_backdrop_capture_active()) {
+  if(!shadersOut && !stereoEye && !aoPrivateReplay && !shadowTwinReplay && gamepad_backdrop_capture_active()) {
     backdropSnapshot.reset();shadersOut=&backdropSnapshot;
   }
   if(backdropReplay && (!backdropReplay->replay || backdropReplay->submission!=R.submissionGeneration))return;
   // eye 1: eye 0's draw, replayed (StereoShaders)
-  const StereoShaders* replay = shadersIn && shadersIn->replay && !aoPrivateReplay &&
+  const StereoShaders* replay = shadersIn && shadersIn->replay && !aoPrivateReplay && !shadowTwinReplay &&
       shadersIn->submission == R.submissionGeneration ? shadersIn : nullptr;
 #ifdef WWHD_NATIVE_DRAW
   // native J3D depth proof (native_draw/j3d_depth.h; off by default): a sampled draw captures its binds
@@ -4385,10 +4813,11 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     j3dProofCap->images = true;
   }
   struct ProofCapEnd { bool on; ~ProofCapEnd() { if (on) g_packetCapture = nullptr; } } j3dProofCapEnd{j3dProofCap.has_value()};
-  // the packet capture of this draw (packet_draw), not of the AO / backdrop replays it may run itself (those come
+  // the packet capture of this draw (packet_draw), not of the AO / twin / backdrop replays it may run itself (those come
   // after its own draw, which hands the capture back)
   PacketCapture* const cap = g_packetCapture;
-  if (cap && (replay || shadersIn || shadersOut || aoPrivateReplay || stereoEye)) cap->refuse("replay");
+  if (cap && (replay || shadersIn || shadersOut || aoPrivateReplay || shadowTwinReplay || stereoEye))
+    cap->refuse("replay");
 #endif
   if (clouds_skip_card()) return;  // clouds.cpp: toon clouds replace the game's cloud cards
   if (!count || !instances || ((prim == 0x13 || prim == 0x14) && count < 4))
@@ -4428,7 +4857,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   const auto& fastPath = fastpath_config();
   // a replayed eye 1 draw records no continuation of its own; nor does a held run's instanced draw (batch_draw.h)
   BatchDraw* const batch = batch_draw();
-  const bool fastPathDraw = fastPath.on && !aoPrivateReplay && !replay && !batch && !gamepad_backdrop_replaying();
+  const bool fastPathDraw = fastPath.on && !aoPrivateReplay && !replay && !batch && !gamepad_backdrop_replaying() && !shadowTwinReplay;
   if (replay || batch) {
     continued.valid = false;
     continued.invalidReason = kNoState;
@@ -4529,7 +4958,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     continued.valid = false;
     continued.invalidReason = kNoState;
   }
-  if (fastPath.profSplit && !aoPrivateReplay)  // the AO replay draw counts in its draw's class
+  if (fastPath.profSplit && !aoPrivateReplay && !shadowTwinReplay)  // replay draws count in their draw's class
     rprof::set_draw_class(fast ? rprof::kClassContinued : registerBreak ? rprof::kClassFullRegisters : rprof::kClassNone);
   uint64_t fsKey = 0;
   LatteFetchShader* fs;
@@ -4550,7 +4979,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       auto* checkedFetch=vk::get_fetch_shader(r,&checkedKey,R.frame);
       vk::Shader* checkedVs=nullptr;
       vk::Shader* checkedPs=nullptr;
+      vk::g_fullShadowVariant=full_shadow_variant(r);
       if(checkedFetch)vk::translate_stages(r,checkedFetch,checkedKey,R.frame,g_shader_state_gen,checkedVs,checkedPs);
+      vk::g_fullShadowVariant=0;
       if(fs!=checkedFetch||fsKey!=checkedKey||vs!=checkedVs||ps!=checkedPs)
         exception_report::raise("stereo shader reuse differs from independent second-eye resolution");
       DRAW_THREAD_STATIC(verified, uint64_t);
@@ -4560,7 +4991,10 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     fs = vk::get_fetch_shader(r, &fsKey, R.frame);
     if (!fs)
       exception_report::raise("missing Vulkan fetch shader");
-    vk::translate_stages(r, fs, fsKey, R.frame, g_shader_state_gen, vs, ps);
+    // a shadow twin's draw: the mask's twin translation, with the depth key (gfx/area_sample.h)
+    vk::g_fullShadowVariant = full_shadow_variant(r);
+    vk::translate_stages(r, fs, fsKey, R.frame, g_shader_state_gen, vs, ps, shadowTwinReplay);
+    vk::g_fullShadowVariant = 0;
   }
   // a held run's instanced draw: its vertex shader's batched variant (batch_draw.h; batch_accept took this one)
   if (batch) {
@@ -4784,13 +5218,14 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   Surface* depth = targets.depth;
   const uint32_t depthSlice = targets.depthSlice, width = targets.width, height = targets.height;
   const float sx = targets.sx, sy = targets.sy;
-  clouds_before_draw(r, ps, colors[0], slices[0], depth);  // clouds.cpp: cloud shadows
+  if (!shadowTwinReplay && !aoPrivateReplay && !targets.sunChain) flush_shadow_merges();
+  if (!shadowTwinReplay) clouds_before_draw(r, ps, colors[0], slices[0], depth);  // clouds.cpp: cloud shadows
   rprof::mark(rprof::kTargets);
   // 60 fps (generated): a HUD draw into the TV picture writes its coverage too (only while it runs;
   // a continued draw keeps the targets and pipeline it was resolved with). Decided on the draw's own
   // colours, before the pass subset (which is then not taken).
   uint32_t covSlot = 0;
-  if (!fast && !replay && !aoPrivateReplay && !backdropReplay && reproj::hud_coverage_wanted())
+  if (!fast && !replay && !aoPrivateReplay && !shadowTwinReplay && !backdropReplay && reproj::hud_coverage_wanted())
     if (Surface* cov = reproj::hud_coverage_target(colors[0])) {
       bool alone = true;
       for (int i = 1; i < 8; i++) alone = alone && !colors[i];
@@ -4839,12 +5274,12 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   // thread, never recorded as a recipe), and until it is ready the draw keeps its own pass as before.
   // Not while the GamePad backdrop captures or replays (its snapshot keeps the draw's own targets), for
   // a HUD coverage draw (60 fps (generated), decided on the draw's own colours above), nor with stereo,
-  // eye 1's replay, the AO replay, or without the async compiler.
+  // eye 1's replay, the AO and shadow twin replays, or without the async compiler.
   uint32_t subsetAbsent = 0;
   std::array<Surface*, 8> ownColors{};  // the draw's own colour targets, when it took over others
   std::array<uint32_t, 8> ownSlices{};
   Pipeline* subsetPipeline = nullptr;
-  if (pass_reuse::subset_on() && pass_state().rendering && pass_state().tracked && !aoPrivateReplay && !replay && !backdropReplay && !batch &&
+  if (pass_reuse::subset_on() && pass_state().rendering && pass_state().tracked && !aoPrivateReplay && !shadowTwinReplay && !replay && !backdropReplay && !batch &&
       !covSlot && stereo::frame.mode == stereo::Off && own.pipeline && !own.pendingCompile && async_pipeline_enabled() &&
       !gamepad_backdrop_replaying() && !gamepad_backdrop_capture_active()) {
     ownColors = colors;
@@ -4886,7 +5321,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   if (!p.pipeline && !p.pendingCompile) return;
   // Shader compile Fast (background_shaders.h): a draw that may be left out only waits the frame's
   // budget and is left out of this frame if its pipeline is not ready by then
-  const bool trackTargets = bgshaders::enabled() && !aoPrivateReplay && !gamepad_backdrop_replaying();
+  const bool trackTargets = bgshaders::enabled() && !aoPrivateReplay && !gamepad_backdrop_replaying() && !shadowTwinReplay;
   if (p.pendingCompile && trackTargets && !background_wait(r, p, colors, depth, subsetClear)) return;
   if (p.pendingCompile && !bgshaders::enabled()) bgshaders::exact(bgshaders::kOff);  // (the AO pass's private
                                                                                       // copy of a draw waits)
@@ -4991,6 +5426,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       c.aoMode = ao_mode();
       c.aoHires = ao_hires_enabled();
       c.aniso = aniso_enabled();
+      c.shadowEdges = frame_shadow_edges();
       c.fs = fs;
       c.fsKey = fsKey;
       c.vs = vs;
@@ -5695,6 +6131,49 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   if (aoPrivateReplay) {
     ao_private().frame = R.frame;
     return;
+  }
+  if (shadowTwinReplay) {
+    for (auto* color : colors)
+      for (auto& t : g_shadowTwins)
+        if (color == &t->surface) t->frame = R.frame;
+    return;
+  }
+  // depth-aware shadow softening: the step again into its twins, then their shadow (G, B) into the game's
+  // targets, whose R (ambient occlusion) and A stay as the game drew them (shadow_twin)
+  if (targets.sunChain && frame_shadow_edges() && !backdropReplay) {
+#ifdef WWHD_NATIVE_DRAW
+    if (cap) cap->refuse("shadow twin replay");
+#endif
+    {
+      struct ReplayGuard {
+        ReplayGuard() { shadowTwinReplay = true; }
+        ~ReplayGuard() { shadowTwinReplay = false; }
+      } guard;
+      g_twinStepSource = nullptr;
+      draw(r, prim, count, indexType, indexAddr, baseVertex, instances);
+    }
+    Surface* source = g_twinStepSource;
+    Surface* guide = full_twin();
+    for (int i = 0; i < 8; i++)
+      if (colors[i])
+        if (Surface* twin = drawn_twin(colors[i])) {
+          const bool enlarging = guide && source && source->width < colors[i]->width && guide != twin;
+          defer_shadow_merge(twin, colors[i], slices[i]);
+          if (enlarging) {
+            FullShadow& f = g_fullShadow[stereoEye & 1];
+            f.frame = R.frame;
+            f.mipKey = sun_chain_key(colors[i]->addr);
+            f.source = source;
+            f.guide = guide;
+            f.rims = render::shadow_rims_weight();
+            f.step = float(guide->extent.width) / float(std::max(colors[i]->extent.width, 1u));
+            f.depth = g_maskDepthFrame[stereoEye & 1] == R.frame ? g_maskDepth[stereoEye & 1] : nullptr;
+            f.builtFrame = ~0ull;  // a second chain in the frame: the stand-in again
+          }
+          mark_draw_target_written(colors[i]);
+        }
+    continued.valid = false;
+    continued.invalidReason = kAoReplay;
   }
   if (ao_hires_enabled() && colors[0] &&
       ps->kind == gfx::ProgramKind::DepthDownsample) {
