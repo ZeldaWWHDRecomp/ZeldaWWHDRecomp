@@ -28,19 +28,24 @@ namespace button_glyphs { void calculate_pane(Cpu* c,PpcFunc fn) { fn(c); } void
 static constexpr uint32_t base=0x20000000, pane=base+0x100, out=base+0x200,
     root=base+0xa00, emitter=base+0x400, projection=base+0x900;
 static float drawn[16];
-static unsigned draws = 0;
+static unsigned draws = 0, hud_draws = 0;
 static uint8_t drawn_alpha = 0;
 extern "C" void hook_028766CC(Cpu*);
+extern "C" void hook_02877100(Cpu*);
 extern "C" {
 void f_02874038_orig(Cpu*) {}
 void f_028766CC_orig(Cpu* c) {
     if(c->r[3]==root) {
         c->r[3]=pane;hook_028766CC(c);c->r[3]=root;
     } else {
+        // nw4f recomputes a pane's matrix only when the pane or its parent changed; otherwise the
+        // cached one stays. A stale cache is what a lost dirty bit after a HUD mode change leaves.
+        if(!c->r[5] && !(ld8(pane+0x44)&0x10)) return;
+        st8(pane+0x44,uint8_t(ld8(pane+0x44)&~0x10));
         stf32(pane+0x54,ldf32(pane+0x1c));stf32(pane+0x64,ldf32(pane+0x20));
     }
 }
-void f_02877100_orig(Cpu*) {}
+void f_02877100_orig(Cpu*) { ++hud_draws; }
 void f_028F8250_orig(Cpu*) {}
 void f_025A847C_orig(Cpu* c) { c->r[3]=emitter; }
 void f_02704D2C_orig(Cpu* c) {
@@ -57,9 +62,17 @@ void hook_02704D2C(Cpu*);
 void hook_0282D9C0(Cpu*);
 }
 static void mode(int m) { aspect::set_mode(m);aspect::on_swap(); }
+static void frames(int n) { for(int i=0;i<n;++i) aspect::on_swap(); }
 static void pane_at(float x,float y) {
-    stf32(pane+0x1c,x);stf32(pane+0x20,y);
+    if(ldf32(pane+0x1c)!=x || ldf32(pane+0x20)!=y) {  // the game's setter marks what it changed
+        stf32(pane+0x1c,x);stf32(pane+0x20,y);
+        st8(pane+0x44,uint8_t(ld8(pane+0x44)|0x10));
+    }
     Cpu c{};c.r[3]=root;hook_028766CC(&c);
+}
+static bool hud_pane_drawn() {
+    Cpu c{};c.r[3]=pane;hud_draws=0;hook_02877100(&c);
+    return hud_draws==1;
 }
 static void capture() {
     Cpu c{};c.r[3]=out;c.r[4]=pane;hook_02704D2C(&c);
@@ -143,6 +156,21 @@ int main() {
     const float tall=(16.f/9)/(4.f/3);
     assert(close(drawn[5],-1.f/(360*tall)) && close(drawn[7],(tall-1)/tall));
     mode(aspect::k16x10);pane_at(390,280);
+    // The HUD constraint keeps the pane (and its particles) inside the chosen shape while the picture
+    // projection still widens: captured at 16:9, then matched, the pane moves by the picture's half
+    // extra; constrained it stays where it was.
+    aspect::set_hud_mode(aspect::kHud16x9);
+    mode(aspect::k32x9);pane_at(390,280);capture();draw(7);
+    assert(close(drawn[0],1.f/(640*2)) && close(drawn[3],0));
+    aspect::set_hud_mode(aspect::kHudMatch);pane_at(390,280);draw(7);
+    assert(close(drawn[0],1.f/(640*2)) && close(drawn[3],640.f/(640*2)));
+    // Constraining back to a narrower HUD shape while the picture stays wide must recompute the panes
+    // whose offset goes away: their cached matrix still sits at the picture's edge, and the draw hook
+    // takes it for a pane the game parked off the screen (the hearts and magic bar disappeared so).
+    frames(4);  // past the 4-swap recompute window of the aspect change above
+    aspect::set_hud_mode(aspect::kHud16x9);pane_at(390,280);
+    assert(close(ldf32(pane+0x54),390.f));  // at the authored place, not the stale 1030
+    assert(hud_pane_drawn());
     // HUD effects inherit the fade of their pane's ancestors, even at the original aspect.
     mode(aspect::kOriginal);pane_at(390,280);capture();
     st8(emitter+0x247,200); faded_pane=root;

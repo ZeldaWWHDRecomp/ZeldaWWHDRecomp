@@ -457,10 +457,11 @@ void test_overlay(const std::string& path) {
         float* d = &px[(size_t(y) * size_t(w) + size_t(x)) * 4];
         d[0] = r * a + d[0] * (1 - a), d[1] = g * a + d[1] * (1 - a), d[2] = b * a + d[2] * (1 - a), d[3] = a + d[3] * (1 - a);
     };
+    const float anchor_extra = aspect::hud_anchor_extra(1280);
     for (const auto& list : guestmods::hud::store().snapshot(0)) {
         if (list->owner != kOwner) continue;
         for (const Command& c : list->commands) {
-            const auto a = guestmods::hud::anchored(c.x, c.y, c.anchor, w, h, 1280, 720), b = guestmods::hud::anchored(c.x + c.w, c.y + c.h, c.anchor, w, h, 1280, 720);
+            const auto a = guestmods::hud::anchored(c.x, c.y, c.anchor, w, h, 1280, 720, anchor_extra), b = guestmods::hud::anchored(c.x + c.w, c.y + c.h, c.anchor, w, h, 1280, 720, anchor_extra);
             const float cr = float(c.rgba >> 24) / 255, cg = float(c.rgba >> 16 & 255) / 255, cb = float(c.rgba >> 8 & 255) / 255, ca = float(c.rgba & 255) / 255;
             switch (c.kind) {
             case Command::Rect:

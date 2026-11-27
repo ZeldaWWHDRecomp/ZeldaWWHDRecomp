@@ -1176,6 +1176,27 @@ void tab_graphics() {
             post_changed([i] { aspect::set_mode(i); hostui::set("aspectMode", std::to_string(i)); });
     }
 
+    heading("Constrain HUD to aspect ratio");
+    {
+        const float display = aspect::requested();
+        const int hm = aspect::hud_mode();
+        // A saved choice from a wider display is inactive here; show Match as the effective choice.
+        const bool chosen = aspect::hud_mode_fits(hm, display);
+        // "21:9"/"32:9" repeat the Aspect ratio radios above: a scope keeps their IDs apart.
+        ImGui::PushID("hudAspect");
+        for (const auto i : aspect::kHudPresets) {
+            if (i) flow::next(flow::check(aspect::hud_mode_name(i)));
+            const bool enabled = aspect::hud_mode_fits(i, display);
+            if (radio(aspect::hud_mode_name(i), chosen ? hm == i : i == aspect::kHudMatch, enabled))
+                post_changed([i] { aspect::set_hud_mode(i); hostui::set("hudAspectMode", std::to_string(i)); });
+        }
+        ImGui::PopID();
+        help("Keeps gameplay HUD elements (hearts, magic, rupees, button prompts, the minimap and other\n"
+             "mod UI) at the edges of a narrower picture shape. The world, enemy health bars, menus and\n"
+             "full-screen screens keep their places. The choice cannot be wider than the picture; those\n"
+             "options are greyed out. Match display leaves the HUD where it is now.");
+    }
+
 #ifdef WWHD_HAS_VULKAN
     if (render::g_backend->api == render::Api::Vulkan) {
         heading("Stereoscopic 3D (experimental)");
@@ -4304,6 +4325,10 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
             const int m = atoi(v.c_str());
             if (aspect::is_preset(m)) aspect::set_mode(m);
         }
+        if (!getenv("WWHD_HUD_ASPECT") && hostui::get("hudAspectMode", v)) {
+            const int m = atoi(v.c_str());
+            if (m >= 0 && m < aspect::kHudModes) aspect::set_hud_mode(m);
+        }
         // the saved gyro settings (WWHD_GYRO overrides the source)
         hostui::post([] { load_gyro(); });
     }
@@ -4528,6 +4553,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     touch_question_check(open);
     const int layer = open ? 0 : layer_mode();
     g_wants_text = (open || layer) && io.WantTextInput;
+    guesthud::set_tv_hud_anchor_extra(aspect::hud_anchor_extra(1280.0f));
     guesthud::frame();
     if (!open && !text) file_select_quit::frame(io.DisplaySize.x, io.DisplaySize.y);
     gfx::g_pip_preview=false;

@@ -79,6 +79,44 @@ int main() {
     assert(close_enough(preset_in(aspect::kOriginal,3440,1440),16.f/9));
     assert(close_enough(preset_in(aspect::kCustom,3440,1440),aspect::mode_value(aspect::kCustom)));
     assert(close_enough(preset_in(aspect::kWindow,3440,1440),2.39f));
+    // HUD constraint: HUD panes follow the chosen shape, never wider than the picture itself.
+    static_assert(aspect::kHudMatch==0 && aspect::kHud32x9==1 && aspect::kHud21x9==2 &&
+                  aspect::kHud16x9==3 && aspect::kHudModes==4);
+    assert(std::strcmp(aspect::hud_mode_name(aspect::kHudMatch), "Match display aspect ratio")==0);
+    assert(aspect::hud_mode_value(aspect::kHudMatch)==0);
+    assert(close_enough(aspect::hud_mode_value(aspect::kHud21x9), 64.f/27));
+    // Graphics options wider than the picture are greyed out (and cannot be made effective).
+    assert(aspect::hud_mode_fits(aspect::kHudMatch,16.f/9) && aspect::hud_mode_fits(aspect::kHud16x9,16.f/9));
+    assert(!aspect::hud_mode_fits(aspect::kHud21x9,16.f/9) && !aspect::hud_mode_fits(aspect::kHud32x9,16.f/9));
+    assert(aspect::hud_mode_fits(aspect::kHud21x9,64.f/27) && !aspect::hud_mode_fits(aspect::kHud32x9,64.f/27));
+    assert(aspect::hud_mode_fits(aspect::kHud32x9,32.f/9) && !aspect::hud_mode_fits(aspect::kHud16x9,4.f/3));
+    auto hud_at=[](int display,int hud,float& kx,float& ky) {
+        aspect::set_mode(display);aspect::set_hud_mode(hud);aspect::on_swap();
+        aspect::hud_factors(aspect::game(),kx,ky);
+    };
+    float hx,hy;
+    hud_at(aspect::k32x9,aspect::kHudMatch,hx,hy);assert(close_enough(hx,2)&&close_enough(hy,1));
+    hud_at(aspect::k32x9,aspect::kHud21x9,hx,hy);assert(close_enough(hx,4.f/3)&&close_enough(hy,1));
+    hud_at(aspect::k32x9,aspect::kHud16x9,hx,hy);assert(close_enough(hx,1)&&close_enough(hy,1));
+    hud_at(aspect::k21x9,aspect::kHud16x9,hx,hy);assert(close_enough(hx,1)&&close_enough(hy,1));
+    // A saved choice wider than the current picture falls back to the picture.
+    hud_at(aspect::kOriginal,aspect::kHud32x9,hx,hy);assert(close_enough(hx,1)&&close_enough(hy,1));
+    hud_at(aspect::k4x3,aspect::kHud16x9,hx,hy);assert(close_enough(hx,1)&&close_enough(hy,16.f/9/(4.f/3)));
+    hud_at(aspect::k4x3,aspect::kHudMatch,hx,hy);assert(hx==1.0f);  // Match is exactly the picture's factors
+    // Mods read display.hud_aspect for layout->HUD math; display.aspect keeps reporting the picture.
+    aspect::set_mode(aspect::k32x9);aspect::on_swap();
+    aspect::set_hud_mode(aspect::kHudMatch);assert(close_enough(aspect::hud_shape(),32.f/9));
+    aspect::set_hud_mode(aspect::kHud21x9);assert(close_enough(aspect::hud_shape(),64.f/27));
+    aspect::set_hud_mode(aspect::kHud16x9);
+    assert(close_enough(aspect::hud_shape(),16.f/9)&&close_enough(aspect::game(),32.f/9));
+    aspect::set_mode(aspect::kOriginal);aspect::on_swap();
+    aspect::set_hud_mode(aspect::kHud32x9);assert(close_enough(aspect::hud_shape(),16.f/9));  // wider than the picture
+    // Mod HUD edge anchors use the same shape; match display keeps today's value.
+    aspect::set_mode(aspect::k32x9);aspect::on_swap();
+    aspect::set_hud_mode(aspect::kHudMatch);assert(close_enough(aspect::hud_anchor_extra(1280),640));
+    aspect::set_hud_mode(aspect::kHud21x9);assert(close_enough(aspect::hud_anchor_extra(1280),640.f/3));
+    aspect::set_hud_mode(aspect::kHud16x9);assert(close_enough(aspect::hud_anchor_extra(1280),0));
+    aspect::set_hud_mode(aspect::kHudMatch);
     aspect::set_mode(aspect::kWindow);aspect::set_window_aspect(1.431f);
     for(uint32_t base:{0x101E0000u,0x10460000u}) {
         void* address=mem::ptr(base);

@@ -735,6 +735,8 @@ The SDK reference is [docs/mod-sdk-v2.md](docs/mod-sdk-v2.md), the mod manager i
 - Useful environment variables: `WWHD_NO_AUDIO=1`, `WWHD_NO_GAMEPAD=1` (no second window), `WWHD_NO_CONTROLLERS=1` (SDL builds: ignore host game controllers), `WWHD_LANGUAGE=<code>` (console language: 1 English, 2 French, 5 Spanish, … — the USA/Asia disc carries English, French and Spanish; a language the game doesn't contain starts in English; with `WWHD_LANGUAGE_REGION=eu` or `jp` from a language source, docs/language-packs.md), `WWHD_RTL=0` / `1` (right-to-left text for Arabic and Hebrew packs off / forced on, docs/rtl-text.md),
   `WWHD_DRC_MODE=window|pip|auto|off|gamepad`, `WWHD_FULLSCREEN=0|1` (the TV window starts windowed / in
   full screen this time instead of as it was left; that session's full screen is not remembered), `WWHD_ASPECT=16:9|window|16:10|21:9|32:9|<w:h>`,
+  `WWHD_HUD_ASPECT=match|16:9|21:9|32:9` (Graphics › Constrain HUD to aspect ratio at start: the shape
+  the HUD is laid out in when narrower than the picture, `match` being the picture's own; overrides the saved choice),
   `WWHD_AUDIO_VOLUME=0..1` (the master volume the session starts at, whatever the Audio slider saved), `WWHD_AUDIO_OUTPUT=auto|tv|gamepad` (the host plays the TV's sound, plus the GamePad's in Off-TV Play: auto; or only one of them), `WWHD_SHADER_CACHE=<file>|0`, `WWHD_AO_MODE=0..2`, `WWHD_AO_HIRES=0|1`, `WWHD_FULL_LIGHT=0|1`, `WWHD_SHARP_TEXT=0|1`, `WWHD_ANISO=0|1`, `WWHD_RES_SCALE=1|1.5|2|3`,
   `WWHD_FXAA=0|1`, `WWHD_QUIT_PROMPT=0` (macOS: quit without asking, also during a game), `WWHD_INTERP=1`, `WWHD_INTERP_FPS=60|120|240` (frame interpolation at that rate),
   `WWHD_INTERP_PACED=0|1` (start values for the Graphics menu; they
