@@ -112,7 +112,9 @@ struct LastShader {
     uint64_t frame = 0, generation = 0, fsKey = 0;
     uint32_t primitive = 0;
     bool clip = false;  // translate's clipping variant (clipAllowed)
+    bool shadowTwin = false;
     Shader* shader = nullptr;
+    uint32_t fullShadow = 0;
 };
 LastShader lastShaders[2];
 struct LastFetch {
@@ -720,11 +722,79 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
     shader.descriptorRanks = make_descriptor_rank_plan(shader.mapping, *shader.dec);
     shader.uniforms = output.uniformOffsetsVK;
     shader.glsl = shader.dec->strBuf_shaderSource->c_str();
-    if (options.areaSampledTextures && ::gfx::area_sample::rewrite(shader.glsl, fixes, false) <= 0)
+    if (options.areaSampledTextures && ::gfx::area_sample::rewrite(shader.glsl, fixes, false, shader.shadowTwin) <= 0)
         fprintf(stderr, "[vulkan] pixel shader %08X: upscaling fix not applied\n", address);
     if (options.sharpTextTextures && ::gfx::sharp_text::rewrite(shader.glsl, options.sharpTextTextures, false) <= 0)
         fprintf(stderr, "[vulkan] pixel shader %08X: sharper text not applied\n", address);
+    // Depth-aware and Hybrid: the unit reads the double-wide stand-in of the light buffer (draw.cpp
+    // full_shadow_image): every read takes the game's levels from its left half and the shadow's components from
+    // level 0 of its right half, the full-resolution shadow (a read at a LOD above 0 the soft one, at 0 the sharp)
+    if (!vertex && shader.fullShadow) {
+        const uint32_t unit = (shader.fullShadow & 0xFF) - 1, mask = shader.fullShadow >> 8 & 0xF;
+        const uint32_t flag = shader.fullShadow >> 12 & 7;  // 1 + the component holding the near-side flag, or 0
+        // 1 + the components of G and of R: the level-0 read's G from the right half's R (smaller twins), or 0
+        const uint32_t green = shader.fullShadow >> 16 & 7, red = shader.fullShadow >> 20 & 7;
+        const std::string name = "textureUnitPS" + std::to_string(unit);
+        const std::string from = "textureLod(" + name + ", ";
+        const std::string to = "wwhdFullShadow(" + name + ", ";
+        // only when every use of the unit besides its declaration is such a read (any other would take the
+        // stand-in as it is)
+        int uses = 0, reads = 0;
+        for (size_t at = shader.glsl.find(name); at != std::string::npos; at = shader.glsl.find(name, at + 1)) {
+            const char next = at + name.size() < shader.glsl.size() ? shader.glsl[at + name.size()] : ';';
+            if (next != ';' && (next < '0' || next > '9')) uses++;  // not the declaration, nor unit 10+
+        }
+        for (size_t at = shader.glsl.find(from); at != std::string::npos; at = shader.glsl.find(from, at + 1)) reads++;
+        int count = 0;
+        if (reads == uses)
+            for (size_t at = shader.glsl.find(from); at != std::string::npos;
+                 at = shader.glsl.find(from, at + to.size())) {
+                shader.glsl.replace(at, from.size(), to);
+                count++;
+            }
+        const size_t entry = shader.glsl.find("void main(");
+        if (count && entry != std::string::npos) {
+            char nearSide[96] = "";
+            if (flag)  // Hybrid's near side of an outline keeps the game's read
+                std::snprintf(nearSide, sizeof nearSide, "    if (f[%u] > 0.5) return v;\n", flag - 1);
+            char sharp[128] = "    if (lod <= 0.0) return v;\n";
+            if (green && red)  // the sharp shadow at the pixel, on its own surface (draw_shadow_upsample with depth)
+                std::snprintf(sharp, sizeof sharp, "    if (lod <= 0.0) { v[%u] = f[%u]; return v; }\n", green - 1, red - 1);
+            char helper[1280];
+            std::snprintf(helper, sizeof helper,
+                "vec4 wwhdFullShadow(sampler2D t, vec2 uv, float lod) {\n"
+                "    float edge = 0.5 / float(textureSize(t, 1).x);  // a level-1 texel: no bilinear read crosses the halves\n"
+                "    vec2 a = vec2(clamp(uv.x * 0.5, edge, 0.5 - edge), uv.y);\n"
+                "    vec4 v = textureLod(t, a, lod);\n"
+                "%s"
+                "    ivec2 s = ivec2(textureSize(t, 0).x / 2, textureSize(t, 0).y);  // the shadow's own pixel, no neighbour\n"
+                "    ivec2 q = clamp(ivec2(uv * vec2(s)), ivec2(0), s - 1);\n"
+                "    vec4 f = texelFetch(t, q + ivec2(s.x, 0), 0);\n"
+                "%s"
+                "%s"
+                "    return mix(v, f, bvec4(%s, %s, %s, %s));\n}\n",
+                green && red ? "" : sharp, nearSide, green && red ? sharp : "",
+                mask & 1 ? "true" : "false",
+                mask & 2 ? "true" : "false", mask & 4 ? "true" : "false", mask & 8 ? "true" : "false");
+            shader.glsl.insert(entry, helper);
+        } else {
+            shader.fullShadow = 0;  // nothing to rewrite: the draw keeps the game's light buffer
+        }
+    }
     shader.gatherUnits = vertex ? 0 : ::gfx::area_sample::gathered_units(shader.glsl, false);
+    shader.rimsOffset = vertex ? -1 : ::gfx::area_sample::rims_offset(shader.glsl, shader.uniforms.offset_texScale[0]);
+    // depth-aware shadow softening (gfx/area_sample.h): the twin translation of the chain's blur, which reads
+    // a negative tex0 scale, or the mask, whose twin translation writes the depth key (the game's own
+    // translations of both are as before the option)
+    shader.edgeBlur = !vertex && options.areaSampledTextures &&
+        (shader.glsl.find("uf_tex0Scale.x < 0.0") != std::string::npos ||
+         (fixes.fix == ::gfx::area_sample::Fix::GatherRays &&
+          (shader.shadowTwin ? shader.glsl.find("wwhdShadowKey(") != std::string::npos
+                             : ::gfx::area_sample::shadow_keyable(shader.glsl))));
+    if (options.areaSampledTextures && !shader.edgeBlur &&
+        (fixes.fix == ::gfx::area_sample::Fix::GatherRays ||
+         (fixes.fix == ::gfx::area_sample::Fix::GuestTapsLevel0 && shader.shadowTwin)))
+        fprintf(stderr, "[vulkan] pixel shader %08X: depth-aware shadow softening not applied\n", address);
     if (vertex) {
         // Depth-only and shaded variants must rasterize identical positions.
         // Match Metal's [[invariant]] position output for multipass depth tests.
@@ -759,7 +829,7 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
             bool accepted=!replacement.empty()&&!original.empty()&&
                 mods::cemu::compatible_shader_interface(original,replacement,error);
             if(accepted && key_verify_rate()) shader.translatedGlsl=shader.glsl;
-            if(accepted) { shader.glsl=std::move(custom); shader.gatherUnits=0; }  // its own uniforms
+            if(accepted) { shader.glsl=std::move(custom); shader.gatherUnits=0; shader.rimsOffset=-1; shader.edgeBlur=false; shader.fullShadow=0; }  // its own uniforms
             if(error.empty()&&!accepted)error=originalError.empty()?"Shader compilation failed":originalError;
             mods::cemu::report_shader(packBase,packAux,vertex,accepted,error);
             fprintf(stderr,"[cemu-pack] %016llx_%016llx_%s %s%s\n",
@@ -889,6 +959,8 @@ void verify_key(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, uint
     auto started = std::chrono::steady_clock::now();
     Shader reference;
     reference.vertex = vertex;
+    reference.shadowTwin = shader.shadowTwin;
+    reference.fullShadow = shader.fullShadow;
     bool built = translate_owned(reference, regs, vertex, fetch, address, size, base, false, link, ~uint64_t{0}, key, clip);
     ++stats.verifyChecks;
     const std::string& translated = shader.translatedGlsl.empty() ? shader.source_text() : shader.translatedGlsl;
@@ -1080,25 +1152,29 @@ void poll_shader_binaries(uint64_t frame, bool drain = false) {
 }
 namespace { thread_local uint64_t lastVariantKey = 0; }
 uint64_t last_translated_variant_key() { return lastVariantKey; }
+uint32_t g_fullShadowVariant = 0;
 Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, uint64_t fsKey,
-                  uint64_t frame, uint64_t stateGeneration, const Shader* linkedVs, bool clipAllowed) {
+                  uint64_t frame, uint64_t stateGeneration, const Shader* linkedVs, bool clipAllowed, bool shadowTwin) {
   gfxvk::draw_locks::Guard locked(gfxvk::draw_locks::kShaders);  // (draw threads: a shared cache)
     lastVariantKey = 0;
     const bool clip = clipAllowed && clip_emulation_wanted_regs(regs);
     poll_shader_binaries(frame);
     ++stats.lookups;
+    shadowTwin &= !vertex;
+    const uint32_t fullShadow = vertex || shadowTwin ? 0 : g_fullShadowVariant;
     auto& last = lastShaders[vertex ? 0 : 1];
     uint32_t primitive = regs[REGADDR::VGT_PRIMITIVE_TYPE] & 0x3F;
     bool cacheLast = frame != ~uint64_t{0} && stateGeneration != ~uint64_t{0};
     if (!cacheLast) { last = {}; stateMemo.reset(); }
     if (cacheLast && last.shader && last.regs == regs && last.frame == frame &&
         last.generation == stateGeneration && last.fsKey == fsKey &&
-        last.fetch == fetch && last.primitive == primitive && last.clip == clip) {
+        last.fetch == fetch && last.primitive == primitive && last.clip == clip && last.shadowTwin == shadowTwin &&
+        last.fullShadow == fullShadow) {
         ++stats.lastHits;
         return last.shader;
     }
     auto remember = [&](Shader* shader) {
-        if (cacheLast) last = {regs, fetch, frame, stateGeneration, fsKey, primitive, clip, shader};
+        if (cacheLast) last = {regs, fetch, frame, stateGeneration, fsKey, primitive, clip, shadowTwin, shader, fullShadow};
         return shader;
     };
     uint32_t start = vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS;
@@ -1108,8 +1184,11 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
     // Level 1: program, fetch shader and linkage.
     std::array<uint32_t, kLinkageWords> words;
     const size_t count = gather_linkage(regs, vertex, fetch, words.data(), clip);
+    // a shadow twin's translation is keyed apart from the game's (its own linkage, variants and pipelines);
+    // one the twin flag does not change aliases the game's shader below (same output)
     const uint64_t seed = base ^ (vertex ? (fsKey * 31) ^ R.vertexFormats.shader_salt() : 0) ^
-                          R.vertexDiagnostics.shader_salt();
+                          R.vertexDiagnostics.shader_salt() ^ (shadowTwin ? 0x5AD0771300000000ull : 0) ^
+                          (fullShadow ? uint64_t(fullShadow) * 0xF0115AD0C3A5C85Bull : 0);
     ++stats.stateHashLookups;
     static const bool memoEnabled = [] {
         const char* value = getenv("WWHD_VK_SHADER_STATE_MEMO");
@@ -1148,6 +1227,8 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
     auto owned = std::make_unique<Shader>();
     Shader* shader = owned.get();
     shader->vertex = vertex;
+    shader->shadowTwin = shadowTwin;
+    shader->fullShadow = fullShadow;
     shader->kind = gfx::program_kind(ppc_ptr(address), size, vertex);
     const bool decompiled = translate_owned(*shader, regs, vertex, fetch, address, size,
         base, true, link, frame, linkage, clip);
@@ -1179,7 +1260,8 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
     shader->sourceId = shader_source_id(shader->glsl);
     shader->spirvKey = source_cache_key(shader->glsl, vertex);
     record_shader_variant(regs, vertex, base, fsKey, shader->dec);
-    record_headstart_shader(regs, vertex, !vertex && linkedVs && linkedVs->dec);
+    // a recording replays registers only, which name the game's translation
+    if (!shadowTwin) record_headstart_shader(regs, vertex, !vertex && linkedVs && linkedVs->dec);
     if (!use.known) {
         const auto& dec = *shader->dec;
         use.unitCount = uint8_t(std::clamp(int(dec.textureUnitListCount), 0, int(LATTE_NUM_MAX_TEX_UNITS)));
@@ -1558,9 +1640,9 @@ void clear_shader_cache() {
     // destructor in the adapted Cemu parser. Keep its process-lifetime cache.
 }
 bool translate_stages(const uint32_t* regs, LatteFetchShader* fetch, uint64_t fsKey, uint64_t frame,
-                      uint64_t stateGeneration, Shader*& vs, Shader*& ps) {
+                      uint64_t stateGeneration, Shader*& vs, Shader*& ps, bool shadowTwin) {
     return clip_emulation::translate_stages<Shader>([&](bool vertex, bool clipAllowed, Shader* linkedVs) {
-        return translate(regs, vertex, fetch, fsKey, frame, stateGeneration, linkedVs, clipAllowed);
+        return translate(regs, vertex, fetch, fsKey, frame, stateGeneration, linkedVs, clipAllowed, shadowTwin);
     }, vs, ps);
 }
 uint64_t vertex_program_hash(const uint32_t* regs, uint64_t frame) {

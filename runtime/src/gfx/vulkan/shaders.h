@@ -34,6 +34,11 @@ struct Shader {
     uint64_t pipelineId = 0;  // portable canonical GLSL+metadata identity, stable before SPIR-V
     bool vertex = false;
     uint32_t gatherUnits = 0;  // pixel: the units it gathers from (area_sample::gathered_units)
+    int rimsOffset = -1;       // pixel: where its hybrid shadow blur weight goes (area_sample::rims_offset)
+    bool edgeBlur = false;     // pixel: the shadow mask with a twin translation, or the chain's edge-aware blur
+    bool shadowTwin = false;   // pixel: translated for the shadow twins' draws (area_sample::rewrite twin)
+    // pixel: a lit material's reads of the light buffer at full resolution (g_fullShadowVariant), or 0
+    uint32_t fullShadow = 0;
     LatteDecompilerShader* dec = nullptr;
     LatteDecompilerShaderResourceMapping mapping;
     DescriptorRankPlan descriptorRanks;
@@ -76,14 +81,19 @@ LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut, uint6
 // linkedVs (pixel shaders): the draw's vertex shader; inputs it has no output for read the GPU's
 // default value for them (SPI_PS_INPUT_CNTL DEFAULT_VAL), as constants.
 // clipAllowed=false: never the depth-clipping-in-shaders variant (translate_stages' fallback).
+// shadowTwin (pixel shaders): the translation for a shadow twin's draw (Shader::shadowTwin), kept apart.
 Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetchShader, uint64_t fsKey,
     uint64_t frame = ~uint64_t{0}, uint64_t stateGeneration = ~uint64_t{0}, const Shader* linkedVs = nullptr,
-    bool clipAllowed = true);
+    bool clipAllowed = true, bool shadowTwin = false);
 // A draw's vertex and pixel shader, consistent about depth clipping in shaders (panvk): when only one
 // stage could take the rewrite, both come back without it (clip_emulation::translate_stages; true then).
-// Its pipeline clamps depth only when both carry it (clip_emulation::pair_clips).
+// Its pipeline clamps depth only when both carry it (clip_emulation::pair_clips). shadowTwin: as translate's.
 bool translate_stages(const uint32_t* regs, LatteFetchShader* fetch, uint64_t fsKey, uint64_t frame,
-                      uint64_t stateGeneration, Shader*& vs, Shader*& ps);
+                      uint64_t stateGeneration, Shader*& vs, Shader*& ps, bool shadowTwin = false);
+// Set by the draw around translate_stages for a lit material that reads the light buffer (draw.cpp
+// full_shadow_variant): (unit + 1) | the shadow's components << 8 | 1 + Hybrid's flag component << 12 |
+// 1 + G's component << 16 | 1 + R's component << 20; its reads of that unit go through the full-resolution stand-in
+extern uint32_t g_fullShadowVariant;
 // Generation must advance for every shader-relevant register write (every register the key
 // reads must be covered by gx2's shader_irrelevant()/vulkan_shader_key_mask()). Primitive
 // mode is checked separately because draw submission writes it directly.

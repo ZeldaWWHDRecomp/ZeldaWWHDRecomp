@@ -122,6 +122,8 @@ static void load_prefs() {
     if (saved(@"cloudShadows", {"WWHD_CLOUD_SHADOWS"})) render::set_cloud_shadows([pref(@"cloudShadows") boolValue]);
     if (saved(@"fullLight", {"WWHD_FULL_LIGHT"})) render::set_full_light([pref(@"fullLight") boolValue]);
     if (saved(@"sharpText", {"WWHD_SHARP_TEXT"})) render::set_sharp_text([pref(@"sharpText") boolValue]);
+    if (saved(@"shadowEdges", {"WWHD_SHADOW_EDGES"})) render::set_shadow_edges([pref(@"shadowEdges") boolValue]);
+    if (saved(@"shadowRims", {"WWHD_SHADOW_RIMS", "WWHD_SHADOW_EDGES"})) render::set_shadow_rims([pref(@"shadowRims") boolValue]);
     if (saved(@"cloudStyle", {"WWHD_CLOUD_STYLE"})) render::set_cloud_style([pref(@"cloudStyle") intValue]);
     if (saved(@"fxaa", {"WWHD_FXAA"})) render::set_fxaa([pref(@"fxaa") boolValue]);
     // frame rate: fps60 is the mode (0 30 fps, 1 frame interpolation; a saved 2, the retired True 60,
@@ -151,6 +153,8 @@ static void save_prefs() {
     if (!env_set({"WWHD_CLOUD_SHADOWS"})) set_pref(@"cloudShadows", @(render::cloud_shadows()));
     if (!env_set({"WWHD_FULL_LIGHT"})) set_pref(@"fullLight", @(render::full_light()));
     if (!env_set({"WWHD_SHARP_TEXT"})) set_pref(@"sharpText", @(render::sharp_text()));
+    if (!env_set({"WWHD_SHADOW_EDGES"})) set_pref(@"shadowEdges", @(render::shadow_edges()));
+    if (!env_set({"WWHD_SHADOW_RIMS", "WWHD_SHADOW_EDGES"})) set_pref(@"shadowRims", @(render::shadow_rims()));
     if (!env_set({"WWHD_CLOUD_STYLE"})) set_pref(@"cloudStyle", @(render::cloud_style()));
     if (!env_set({"WWHD_FXAA"})) set_pref(@"fxaa", @(render::fxaa()));
     if (!env_set({"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) set_pref(@"fps60", @(interp::mode()));

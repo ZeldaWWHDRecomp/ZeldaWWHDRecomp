@@ -47,6 +47,13 @@ void swap_pass() {
     std::swap(pass_state().height, otherPass.height);
     std::swap(slot.activeRenderScope, otherPass.scope);
 }
+}
+void stereo_forget_pass_surface(const Surface* s) {
+    for (auto& c : otherPass.colors)
+        if (c == s) c = nullptr;
+    if (otherPass.depth == s) otherPass.depth = nullptr;
+}
+namespace {
 DeferredCommands* eye_stream() {
     if (!eyeCommands.capturing()) {
         if (!eyeCommands.command_count()) eyeCommands.hold_in(&eyePodCommands);

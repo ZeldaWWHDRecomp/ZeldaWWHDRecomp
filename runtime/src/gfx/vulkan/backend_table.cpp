@@ -106,6 +106,7 @@ const Backend& vulkan_backend() {
             case kFeatureScaleFilter: return gfxvk::graphics_feature_available(gfxvk::GraphicsFeature::ScaleFilter);
             case kFeatureCapture: return true;
             case kFeatureShaderHeadStart: return false;  // Metal shader cache only
+            case kFeatureShadowBlur: return true;
             }
             return true;
         };

@@ -347,6 +347,13 @@ void request_tv_dump(const std::string&, int);
 void create_surface_image(Surface*,bool forRendering,VkExtent3D explicitExtent = {},
                           uint32_t sharedQueueFamily = VK_QUEUE_FAMILY_IGNORED);
 void reset_ao_private_cache();
+// depth-aware shadow softening (draw.cpp shadow_twin): G and B of a step of the sun shadow mask's chain from its
+// twin, averaged over each pixel of the game's target; its R and A stay (surfaces.cpp)
+void draw_shadow_merge(Surface* twin, Surface* dst, uint32_t dstSlice);
+// the full-resolution shadow read's stand-in (draw.cpp full_shadow_image): src (the chain's 240x135 twin) per pixel
+// of dst from dstX on, guided by the light buffer's twin's key and the scene depth
+void draw_shadow_upsample(Surface* src, Surface* guide, Surface* dst, uint32_t dstSlice, float rims, uint32_t dstX = 0,
+                          float nearStep = 0.0f, Surface* depth = nullptr);
 void destroy_surface_image(Surface*);
 // once per frame (swap): the texture budget's sweep (WWHD_VK_TEXTURE_BUDGET)
 void texture_budget_step();

@@ -99,6 +99,27 @@ std::atomic<bool> g_sharp_text{[] {
 }()};
 bool sharp_text() { return g_sharp_text.load(std::memory_order_relaxed); }
 void set_sharp_text(bool on) { g_sharp_text.store(on, std::memory_order_relaxed); }
+std::atomic<bool> g_shadow_edges{[] {
+    const char* e = std::getenv("WWHD_SHADOW_EDGES");
+    return e && std::strcmp(e, "0") != 0;  // original by default
+}()};
+bool shadow_edges() { return g_shadow_edges.load(std::memory_order_relaxed); }
+void set_shadow_edges(bool on) { g_shadow_edges.store(on, std::memory_order_relaxed); }
+std::atomic<bool> g_shadow_rims{[] {
+    const char* e = std::getenv("WWHD_SHADOW_RIMS");
+    return !e || std::strcmp(e, "0") != 0;
+}()};
+bool shadow_rims() { return g_shadow_rims.load(std::memory_order_relaxed); }
+void set_shadow_rims(bool on) { g_shadow_rims.store(on, std::memory_order_relaxed); }
+float shadow_rims_weight() {
+    // WWHD_SHADOW_RIMS_WEIGHT (0 to 1) tries other weights
+    static const float weight = [] {
+        const char* e = std::getenv("WWHD_SHADOW_RIMS_WEIGHT");
+        const float v = e ? float(std::atof(e)) : 0.75f;
+        return std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : 0.75f;
+    }();
+    return shadow_edges() && shadow_rims() ? weight : 0.0f;
+}
 void set_cloud_shadows(bool on) { g_cloud_shadows.store(on, std::memory_order_relaxed); }
 float horizon_haze() { return g_haze.load(std::memory_order_relaxed); }
 void set_horizon_haze(float v) {

@@ -73,7 +73,7 @@ const Backend& metal_backend() {
         b.fxaa = gfx::fxaa_enabled;
         b.set_fxaa = gfx::set_fxaa;
         b.hud_layout = gfx::hud_layout;  // (OP_HUD_LAYOUT: FXAA before the HUD; hud_layout.h)
-        b.feature_available = [](int) { return true; };
+        b.feature_available = [](int f) { return f != kFeatureShadowBlur; };  // Shadow blur: Vulkan only
         b.device = gfx::device_name;
         return b;
     }();
