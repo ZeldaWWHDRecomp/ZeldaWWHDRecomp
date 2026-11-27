@@ -2,7 +2,7 @@
 """Decomp build (CMake WWHD_DECOMP=ON, docs/decomp-build.md): which game functions run as compiled
 decompiled source, and the generated glue for them.
 
-usage: gen.py DECOMP_DIR OUT_DIR [--game RPX] [--jobs N] [--game-build] [--hook-shard N]
+usage: gen.py DECOMP_DIR OUT_DIR [--game RPX | --no-game] [--jobs N] [--game-build] [--hook-shard N]
 
 DECOMP_DIR is the decompilation (the `decomp` submodule): DECOMP_DIR/wwhd_src (the source),
 DECOMP_DIR/tools/verify/{include,src,units}. Every output goes to OUT_DIR (the CMake build directory,
@@ -41,6 +41,8 @@ The last three are made from your own copy of the game (--game, cking.rpx of the
 decompilation does not contain the game's model data, and autoglue reads the content of the strings
 and checks the tables against the game's code. They are game data: they stay in OUT_DIR. Sources
 without a glue block need nothing from the game; a decompilation without any needs no --game.
+--no-game (tools/decomp_build/windows_compile_check.py, CI): the same outputs without the game, for compiling only:
+placeholder strings, model data of zeros, autoglue's checks against the game skipped (Glue.load_no_game).
 
 Game units: verify units (tools/verify/units/*.txt; with the decompilation's tools/verify/specfile.py: the
 specs its own gates run, sub-folders and `include` lines too) that share source files with VERIFY marks form one
@@ -231,6 +233,7 @@ def fast_rewrite(text, hcall, ptr_ic):
     return text, n
 
 
+NO_GAME_STR = "wwhd-placeholder-"  # --no-game: the text every `str ADDR` line reads (Glue.load_no_game)
 HCALL_DIR = "hinc"  # OUT_DIR/hinc: the decompilation's wwhd_src/include with header_call applied (--hcall)
 
 
@@ -263,8 +266,8 @@ class Glue:
     """The decompilation's own source rewriter (tools/verify/autoglue.py) and model data headers
     (tools/verify/assets.py), with every output and the game image in OUT_DIR instead of its build/."""
 
-    def __init__(self, src, out, rpx):
-        self.src, self.out, self.rpx = src, out, rpx
+    def __init__(self, src, out, rpx, no_game=False):
+        self.src, self.out, self.rpx, self.no_game = src, out, rpx, no_game
         self.image = os.path.join(out, "verify", "image.bin")
         self.include = os.path.join(out, "include")
         self.mods = None
@@ -272,6 +275,8 @@ class Glue:
     def load(self):
         if self.mods:
             return self.mods
+        if self.no_game:
+            return self.load_no_game()
         if not self.rpx or not os.path.isfile(self.rpx):
             sys.exit("gen.py: the decompilation's GameCube-style sources need your own copy of the game (model "
                      "data, string and table glue): no game code at %s (CMake: -DWWHD_DECOMP_GAME=<game "
@@ -320,6 +325,37 @@ class Glue:
             from rpx import Rpx, SHT_NOBITS
             autoglue._bss = [(s.addr, s.file_size) for s in Rpx(self.rpx).sections
                              if s.type == SHT_NOBITS and s.addr]
+        self.mods = (assets, autoglue)
+        return self.mods
+
+    def load_no_game(self):
+        """--no-game (tools/decomp_build/windows_compile_check.py: a compile check without the game): autoglue and assets
+        with an image of zeros. Every `str` line reads a placeholder text of its own (wwhd-placeholder-ADDR, which also
+        stands for the source's literal), the table and assert-text checks against the game are skipped, the model data
+        headers hold zeros. The glued sources compile as with the game (same declarations, same glue); their data is
+        not the game's, so nothing built from them may be run."""
+        sys.path.insert(0, os.path.join(self.src, "tools", "verify"))
+        if os.path.join(ROOT, "tools") not in sys.path:
+            sys.path.append(os.path.join(ROOT, "tools"))
+        assets = None
+        if os.path.isfile(os.path.join(self.src, "tools", "verify", "assets.py")):
+            import assets
+            assets.OUT = os.path.join(self.include, "assets")
+            assets.img_read = lambda a, n: bytes(n)
+            assets.stale = lambda path: True  # (never one made from the game)
+        import autoglue
+        same_text, source_spelling = autoglue.same_text, autoglue.source_spelling
+
+        def placeholder(content):
+            return isinstance(content, str) and content.startswith(NO_GAME_STR)
+        autoglue._image, autoglue._bss = [], []
+        autoglue.img_read = lambda a, n: bytes(n)
+        autoglue.img_cstr = lambda a: "%s%08X" % (NO_GAME_STR, a)
+        autoglue.same_text = lambda host, content: placeholder(content) or same_text(host, content)
+        autoglue.source_spelling = lambda text, pos, content: (content if placeholder(content)
+                                                               else source_spelling(text, pos, content))
+        autoglue.assert_text_use = lambda *a, **k: False
+        autoglue.check_table = lambda *a, **k: (0, 0)
         self.mods = (assets, autoglue)
         return self.mods
 
@@ -432,9 +468,9 @@ def shared_tu_data(comps, texts):
 _worker_glue = None
 
 
-def _glue_worker_init(src, out, rpx):
+def _glue_worker_init(src, out, rpx, no_game=False):
     global _worker_glue
-    _worker_glue = Glue(src, out, rpx)
+    _worker_glue = Glue(src, out, rpx, no_game)
 
 
 def _glue_worker(rel):
@@ -591,6 +627,9 @@ def _main():
     ap.add_argument("src")
     ap.add_argument("out")
     ap.add_argument("--game", help="cking.rpx of your own copy of the game (USA)")
+    ap.add_argument("--no-game", action="store_true",
+                    help="compile checks only (windows_compile_check.py): no game; the glue reads placeholder strings "
+                         "and zeros, the checks against the game are skipped; the result must not be built into a game")
     ap.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1), help="parallel autoglue processes")
     ap.add_argument("--hooked-bodies", action="store_true",
                     help="fast mode: functions the runtime hooks run their decompiled body behind the hook")
@@ -610,6 +649,8 @@ def _main():
                     help="the units are compiled with GABI_GAME_BUILD (the decompilation's port_hooks.h points call the "
                          "port): list their sites as moved (port_sites.py)")
     a = ap.parse_args()
+    if a.no_game and a.game:
+        sys.exit("gen.py: --no-game and --game exclude each other")
     src = os.path.abspath(a.src)
     out = os.path.abspath(a.out)
     for need in ("wwhd_src", "tools/verify/include/gabi.h", "tools/verify/units"):
@@ -620,7 +661,7 @@ def _main():
     units, skipped = read_units(src)
     write_if_changed(os.path.join(out, "skipped.txt"), "".join("%-40s %s\n" % x for x in skipped))
     hooks = runtime_hooks()
-    gluer = Glue(src, out, os.path.abspath(a.game) if a.game else None)
+    gluer = Glue(src, out, os.path.abspath(a.game) if a.game else None, a.no_game)
     texts = {}          # source (relative) -> its text as compiled
     glued = {}          # glued source -> (file-scope statics, extern names of it and its headers)
     n_assets = 0
@@ -634,7 +675,7 @@ def _main():
         n_assets = gluer.assets()  # also the game image, before the workers read it
         # autoglue takes most of the time: the sources in parallel (each worker loads the image once)
         with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, a.jobs), initializer=_glue_worker_init,
-                                                    initargs=(src, out, gluer.rpx)) as ex:
+                                                    initargs=(src, out, gluer.rpx, a.no_game)) as ex:
             for s, (text, statics, externs) in zip(to_glue, ex.map(_glue_worker, to_glue, chunksize=8)):
                 texts[s] = text
                 glued[s] = (statics, externs)
@@ -794,7 +835,8 @@ def _main():
     if n_glued:
         deps.update(cmake_path(os.path.join(src, "tools", "verify", f)) for f in ("autoglue.py", "assets.py", "assets.txt")
                     if os.path.isfile(os.path.join(src, "tools", "verify", f)))
-        deps.add(cmake_path(gluer.rpx))
+        if gluer.rpx:
+            deps.add(cmake_path(gluer.rpx))
     cm.append("set(WWHD_DECOMP_GEN_DEPENDS\n  %s)" % "\n  ".join('"%s"' % d for d in sorted(deps)))
     cm.append("set(WWHD_DECOMP_HOOK_SOURCES\n  %s)" % "\n  ".join('"%s"' % cmake_path(p) for p in hook_sources))
     write_if_changed(os.path.join(out, "units.cmake"), "\n".join(cm) + "\n")

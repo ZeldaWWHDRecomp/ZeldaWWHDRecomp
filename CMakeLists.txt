@@ -96,6 +96,19 @@ elseif(EXISTS "${GEN_DIR}/decomp_hooks.txt")
   message(FATAL_ERROR "${GEN_DIR} holds decomp build code (recomp.py --decomp-hooks): configure with -DWWHD_DECOMP=ON, "
                       "or point GEN_DIR at a normal recompile")
 endif()
+# WWHD_DECOMP_FLAGS_ONLY (with WWHD_DECOMP_RUNTIME_ONLY; tools/decomp_build/windows_compile_check.py): only the
+# wwhd_decomp_flags probe in compile_commands.json, i.e. how setup compiles a game unit, as the release's runtime-only
+# decomp build records it, without the runtime, its dependencies or GEN_DIR (configures in seconds with any compiler,
+# e.g. a cross llvm-mingw on Linux). Nothing above this line needs them either.
+option(WWHD_DECOMP_FLAGS_ONLY "decomp build: configure only how setup compiles a game unit (CI compile check)" OFF)
+if(WWHD_DECOMP_FLAGS_ONLY)
+  if(NOT (WWHD_DECOMP AND WWHD_DECOMP_RUNTIME_ONLY))
+    message(FATAL_ERROR "WWHD_DECOMP_FLAGS_ONLY needs -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON")
+  endif()
+  add_library(wwhd_decomp_flags_only OBJECT EXCLUDE_FROM_ALL tools/decomp_build/hooks_none.cpp)
+  wwhd_decomp_link(wwhd_decomp_flags_only)
+  return()
+endif()
 
 file(GLOB GEN_SOURCES CONFIGURE_DEPENDS ${GEN_DIR}/code_*.c)
 if(NOT GEN_SOURCES)
@@ -2343,6 +2356,8 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME decomp_build_stable_src COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_stable_src.py")
   # the game units define no gmem_frame_info, the runtime does (#678: a weak copy per unit broke the Windows link)
   add_test(NAME decomp_build_frame_info_extern COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_frame_info_extern.py")
+  # the Windows compile check's job list, options and no-game glue (the check itself: .github/workflows/decomp-windows.yml)
+  add_test(NAME decomp_build_windows_compile_check COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_windows_compile_check.py")
   add_test(NAME release_appimage_apprun COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_appimage_apprun.py")
   add_test(NAME release_appimage_runtime COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_appimage_runtime.py")
   add_test(NAME release_appimage_licenses COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_appimage_licenses.py")

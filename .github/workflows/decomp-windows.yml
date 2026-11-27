@@ -1,0 +1,96 @@
+# Decomp version, Windows compile check (issue #678): every source of every game unit compiled with the pinned
+# llvm-mingw and setup's exact Windows unit options, so a POSIX-only header or a libc++ / mingw-w64 difference in the
+# decompilation (the `decomp` submodule) fails here and not on a player's PC. Cross-compiled on Linux with the
+# Linux-hosted llvm-mingw of the release tools/installer/toolchains.json pins; no game files
+# (tools/decomp_build/windows_compile_check.py: gen.py --no-game). x86-64 in fast mode (setup's default) with a link
+# smoke of five merged units (COFF duplicate symbols, #684); arm64 in the plain build (the only one setup offers on
+# Windows on ARM).
+name: decomp-windows
+
+on:
+  push:
+    branches: [devel, main]
+  pull_request:
+    paths:
+      - "decomp"
+      - "decomp/**"
+      - "tools/decomp_build/**"
+      - "tools/installer/**"
+      - "tools/release/package.py"
+      - "cmake/Decomp.cmake"
+      - "CMakeLists.txt"
+      - "runtime/include/**"
+      - ".github/workflows/decomp-windows.yml"
+  workflow_dispatch:
+
+# A new push to a pull request cancels its older run; pushes to devel and main always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # the Linux-hosted build of the llvm-mingw release toolchains.json pins (the check below fails when they differ)
+  LLVM_MINGW_VERSION: "20260922"
+  LLVM_MINGW_SHA256: bb7bb7654b33d5aa8712acb837c963b2e0c56352560c76105270a3268c665c21
+
+jobs:
+  compile:
+    name: windows-${{ matrix.arch }} (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            triple: x86_64-w64-mingw32
+            mode: fast
+            smoke: 5
+          - arch: arm64
+            triple: aarch64-w64-mingw32
+            mode: plain
+            smoke: 0
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: true
+
+      - name: Same llvm-mingw as setup (tools/installer/toolchains.json)
+        run: |
+          python3 - <<'EOF'
+          import json, os, sys
+          v = os.environ["LLVM_MINGW_VERSION"]
+          pins = {k: t for k, t in json.load(open("tools/installer/toolchains.json"))["toolchains"].items()
+                  if t["kind"] == "llvm-mingw"}
+          bad = [k for k, t in pins.items() if "/download/%s/" % v not in t["url"]]
+          if not pins or bad:
+              sys.exit("toolchains.json pins another llvm-mingw than this workflow (%s): update LLVM_MINGW_VERSION and "
+                       "LLVM_MINGW_SHA256 in .github/workflows/decomp-windows.yml" % ", ".join(bad or ["none"]))
+          print("llvm-mingw", v, "for", ", ".join(sorted(pins)))
+          EOF
+
+      - name: Cache llvm-mingw
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: ~/llvm-mingw
+          key: llvm-mingw-${{ env.LLVM_MINGW_VERSION }}-ubuntu-22.04-x86_64
+
+      - name: Download llvm-mingw
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          name="llvm-mingw-$LLVM_MINGW_VERSION-ucrt-ubuntu-22.04-x86_64"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/llvm-mingw.tar.xz" \
+            "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW_VERSION/$name.tar.xz"
+          echo "$LLVM_MINGW_SHA256  $RUNNER_TEMP/llvm-mingw.tar.xz" | sha256sum -c -
+          mkdir -p ~/llvm-mingw
+          tar -xJf "$RUNNER_TEMP/llvm-mingw.tar.xz" -C ~/llvm-mingw --strip-components=1
+          rm "$RUNNER_TEMP/llvm-mingw.tar.xz"
+
+      - name: Check script's own tests
+        run: python3 tools/decomp_build/test_windows_compile_check.py
+
+      - name: Compile every game unit for ${{ matrix.triple }} (${{ matrix.mode }} mode)
+        run: |
+          python3 tools/decomp_build/windows_compile_check.py --toolchain ~/llvm-mingw --triple ${{ matrix.triple }} \
+            --mode ${{ matrix.mode }} --link-smoke ${{ matrix.smoke }} --work "$RUNNER_TEMP/wcc" --jobs "$(nproc)"
