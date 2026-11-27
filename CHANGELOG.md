@@ -74,6 +74,15 @@ what is on `devel` and not released yet (also in the
 
 ### Fixed
 
+- **Decomp version: setup's model preparation no longer stops on some stage rooms with "Latte GLSL translation
+  failed"** (#682, thanks @radialmonster). The decomp version's native renderer (Vulkan) keeps a description of each
+  J3D material draw and reuses it while the material's objects stay at the same addresses. A room or model loaded
+  where another one had been (setup's model sweep loads one after the other: Cave10 after Cave09, I_SubAN, TF_06)
+  could leave those addresses unchanged but rewrite the shader's display list with the new room's programs. The
+  description kept the old program addresses, so the draw translated whatever lay there now: the game stopped, or
+  crashed while translating (at `M_DragB_Stage`, reported as `QuadRenderer::draw`). A described draw now also checks
+  that list against its bytes and describes the draw again when it changed. The recompiled version, and Metal, are
+  unchanged (`WWHD_NATIVE_J3D_DESC_LISTCHECK=0` turns the check off).
 - **Moon jump: no more softlock when Link touches lava** (#616, thanks @swinter-code). Holding the moon jump as
   Link fell into lava (in Dragon Roost Cavern, for example) skipped the burn and the return to the room's entrance:
   afterwards only the moon jump moved Link, and saving was refused because the game still thought an event was

@@ -5,6 +5,7 @@
 #include "../../third_party/cemu/cemu_shim.h"  // (as the gx2 sources get it: -include; for gx2_regs.h)
 #include "gx2/native_j3d_desc.h"
 #include "gx2/native_j3d_desc_draw.h"
+#include "native_draw/j3d_desc_lists.h"
 #include "gx2/native_draw.h"
 #include "gx2/gx2_cmd.h"
 #include "gx2/gx2_regs.h"
@@ -51,7 +52,7 @@ enum Count : uint32_t {
     // game side: the inventory
     cHook, cDescribed, cSkip0, cDescribedPass0 = cSkip0 + kReasons, cDescribedPass1, cDescribedPass2,
     cDefines, cDefNew, cDefShader, cDefDrawState, cDefStatePart, cDefProjection, cDefFetch, cDefSamplerTable,
-    cDefVariable, cDefContent, cDefRefresh, cDefSame, cEnvCaptures, cEnvNew, cEnvKey, cEnvFrame, cEnvSame, cEnvVersions,
+    cDefVariable, cDefContent, cDefRefresh, cDefList, cDefSame, cEnvCaptures, cEnvNew, cEnvKey, cEnvFrame, cEnvSame, cEnvVersions,
     cMeshes, cRecording, cBlocks, cListBindsCount,
     // render side: verify
     cDraws, cUnknown, cVerifyDue, cSiteDraws, cInterrupted, cMeshMismatch, cImageMismatch, cEnvMismatch,
@@ -72,7 +73,8 @@ const char* count_name(uint32_t c) {
         "hook calls", "described", nullptr, "described pass 0", "described pass 1", "described pass 2",
         "defines", "define: new", "define: shader", "define: draw state", "define: state part",
         "define: projection flags", "define: fetch", "define: sampler table", "define: streams/samplers",
-        "define: texture/sampler content", "define: refresh", "define: same image (kept)", "env captures", "env: new",
+        "define: texture/sampler content", "define: refresh",
+        "define: program list bytes", "define: same image (kept)", "env captures", "env: new",
         "env: key", "env: texture/projection content", "env: same image (kept)", "env versions", "meshes", "recording", "blocks",
         "list binds", "desc draws", "unknown records", "verify due", "site draws", "interrupted",
         "verify: mesh mismatches", "verify: image mismatches", "verify: env mismatches", "verify: block mismatches",
@@ -239,6 +241,7 @@ struct TlDesc {
     std::vector<uint32_t> key;
     std::vector<std::pair<GameObject*, uint32_t>> objects;
     GameDesc* desc = nullptr;
+    const Desc* rec = nullptr;  // the record it found valid (immutable: its list bytes)
     uint16_t id = 0, version = 0;
 };
 struct TlEnv {
@@ -693,6 +696,13 @@ extern "C" void wwhd_j3ddesc_skip(unsigned reason) {
     t_capturing = false;
     count(cSkip0 + (reason < kReasons ? reason : 0));
 }
+// the description's program list against guest memory now (j3d_desc_lists.h; WWHD_NATIVE_J3D_DESC_LISTCHECK=0: off)
+static bool list_holds(const Desc* rec, const unsigned* key, unsigned words) {
+    static const bool on = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_LISTCHECK", 1) != 0;
+    if (!on || !rec || words <= kKeyListBytesWord) return true;
+    const uint32_t addr = key[kKeyListWord], bytes = key[kKeyListBytesWord];
+    return program_list_holds(key, words, rec->lists, readable(addr, bytes) ? mem::ptr(addr) : nullptr);
+}
 extern "C" unsigned wwhd_j3ddesc_begin(const unsigned* key, unsigned words) {
     Current& c = t_cur;
     if (!c.open || words < kKeyFixed) return 0;
@@ -706,7 +716,7 @@ extern "C" unsigned wwhd_j3ddesc_begin(const unsigned* key, unsigned words) {
         if (it != t_descs.end() && it->second.key.size() == words &&
             !std::memcmp(it->second.key.data(), key, words * 4)) {
             const uint64_t tc = t ? now_ns() : 0;
-            const bool hold = objects_hold(it->second.objects, frame);
+            const bool hold = objects_hold(it->second.objects, frame) && list_holds(it->second.rec, key, words);
             if (tc) g_contentNs.fetch_add(now_ns() - tc, std::memory_order_relaxed);
             if (hold) {
                 c.desc = it->second.desc;
@@ -736,6 +746,7 @@ extern "C" unsigned wwhd_j3ddesc_begin(const unsigned* key, unsigned words) {
                     why = cDefContent;
                     break;
                 }
+            if (!why && !list_holds(d.rec, key, words)) why = cDefList;
             if (tc) g_contentNs.fetch_add(now_ns() - tc, std::memory_order_relaxed);
         }
         if (why) {
@@ -750,7 +761,7 @@ extern "C" unsigned wwhd_j3ddesc_begin(const unsigned* key, unsigned words) {
         } else {
             c.descId = d.id;
             c.descVersion = d.version;
-            if (tlcache_on()) t_descs[k4] = TlDesc{d.key, d.objects, &d, d.id, d.version};
+            if (tlcache_on()) t_descs[k4] = TlDesc{d.key, d.objects, &d, d.rec, d.id, d.version};
         }
     }
     if (t) g_keyNs.fetch_add(now_ns() - t, std::memory_order_relaxed);
@@ -852,7 +863,7 @@ extern "C" unsigned wwhd_j3ddesc_define(void) {
     c.descId = d.id;
     c.descVersion = d.version;
     if (tlcache_on())
-        t_descs[Key4{c.key[0], c.key[1], c.key[2], c.key[5]}] = TlDesc{c.key, c.objects, &d, d.id, d.version};
+        t_descs[Key4{c.key[0], c.key[1], c.key[2], c.key[5]}] = TlDesc{c.key, c.objects, &d, d.rec, d.id, d.version};
     if (t) g_defineNs.fetch_add(now_ns() - t, std::memory_order_relaxed);
     return 1;
 }

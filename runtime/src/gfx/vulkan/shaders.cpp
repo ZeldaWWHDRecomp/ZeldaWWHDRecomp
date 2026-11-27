@@ -1158,7 +1158,11 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
         std::string{}.swap(shader->glsl);
         shaders.emplace(shader->key, std::move(owned));
         render_objects::set_shaders(shaders.size());
-        fprintf(stderr, "[vulkan] shader %08X: %s\n", address, shader->error.c_str());
+        // (the program's size and first words, as the decompiler reads them: a program address that points at
+        // other data shows here)
+        const auto* w = reinterpret_cast<const uint32_t*>(ppc_ptr(address));
+        fprintf(stderr, "[vulkan] shader %08X: %s (%s program, %u bytes; words %08X %08X %08X %08X)\n", address,
+                shader->error.c_str(), vertex ? "vertex" : "pixel", size, w[0], w[1], w[2], w[3]);
         return remember(shader);
     }
     // (TEST ONLY, WWHD_TEST_PS_LOD0=1: every pixel program's biased texture reads at explicit level 0, so pictures
