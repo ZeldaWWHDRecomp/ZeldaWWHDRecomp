@@ -60,6 +60,7 @@ float pending(const std::string& id);
 void set_targeting_letterbox_mode(int mode); // main thread, applies and persists the three-way choice
 void set_camera_speed(float speed);         // main thread
 void set_mouse_sensitivity(float degrees);  // main thread
+void set_mouse_first_person_scale(float scale);  // main thread (First-person sensitivity, x the mouse sensitivity)
 void set_invert_camera_y(bool on);          // main thread
 void set_fov_scale(float scale);            // main thread (1 = the original gameplay field of view)
 void set_rumble(bool on);                   // main thread

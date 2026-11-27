@@ -1,6 +1,7 @@
 #include "manager.h"
 #include "packages.h"
 #include "mods.h"
+#include "camera_mouse.h"
 #include "climb.h"
 #include "game_progress_host.h"
 #include "achievements_host.h"
@@ -264,7 +265,10 @@ void load_saved() {
         auto value = std::strtoul(button.c_str(), &end, 10);
         if (end != button.c_str() && *end == '\0' && value <= UINT32_MAX) set_move_speed_button(uint32_t(value));
     }
-    number("mod.mouse-camera.sensitivity", "WWHD_MOD_MOUSE_SENS", .08f, .3f, set_mouse_sensitivity);
+    number("mod.mouse-camera.sensitivity", "WWHD_MOD_MOUSE_SENS", camera_mouse::kSensitivityMin, camera_mouse::kSensitivityMax,
+           set_mouse_sensitivity);
+    number("mod.mouse-camera.first-person", "WWHD_MOD_MOUSE_FP", camera_mouse::kFirstPersonMin, camera_mouse::kFirstPersonMax,
+           set_mouse_first_person_scale);
     auto flag = [](const char* key, const char* env, void (*apply)(bool)) {
         std::string v;
         if (!std::getenv(env) && hostui::get(key, v) && (v == "0" || v == "1")) apply(v == "1");

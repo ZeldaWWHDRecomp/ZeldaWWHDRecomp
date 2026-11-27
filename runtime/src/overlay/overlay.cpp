@@ -88,6 +88,7 @@ namespace gfxvk { bool buffer_cache_enabled(); unsigned submission_pool_slots();
 #include "../input_map.h"
 #include "../mods/climb.h"
 #include "../mods/mods.h"
+#include "../mods/camera_mouse.h"
 #include "../mods/player_name.h"
 #include "../mods/manager.h"
 #include "../mods/game_settings.h"
@@ -2260,8 +2261,15 @@ void builtin_options(const std::string& id) {
         help("Multiplies the speed the wind gives the boat. The jump (R) keeps its normal height.");
     } else if (id == "mouse-camera") {
         float sensitivity = mods::mouse_sensitivity();
-        if (ImGui::SliderFloat("Sensitivity", &sensitivity, .08f, .3f, "%.3f"))
+        if (ImGui::SliderFloat("Sensitivity", &sensitivity, mods::camera_mouse::kSensitivityMin,
+                               mods::camera_mouse::kSensitivityMax, "%.3f"))
             hostui::post([sensitivity] { game_settings::set_mouse_sensitivity(sensitivity); });
+        float first = mods::mouse_first_person_scale();
+        if (ImGui::SliderFloat("First-person sensitivity", &first, mods::camera_mouse::kFirstPersonMin,
+                               mods::camera_mouse::kFirstPersonMax, "%.2fx"))
+            hostui::post([first] { game_settings::set_mouse_first_person_scale(first); });
+        help("Sensitivity: degrees the camera turns per mouse point, on foot, sailing, in first person and when aiming. "
+             "First-person sensitivity multiplies it in first person and when aiming only (1.00x: the same as on foot).");
     }
 }
 

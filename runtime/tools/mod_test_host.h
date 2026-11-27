@@ -92,6 +92,9 @@ float camera_speed() { return speed; }
 void set_camera_speed(float f) { speed=f; }
 float mouse_sensitivity() { return sensitivity; }
 void set_mouse_sensitivity(float f) { sensitivity=f; }
+static float first_person_scale = 1.f;
+float mouse_first_person_scale() { return first_person_scale; }
+void set_mouse_first_person_scale(float f) { first_person_scale=f; }
 }
 // the built-in Achievements (mods/achievements.cpp)
 namespace achievements {

@@ -36,6 +36,10 @@ bool mouse_camera();
 void set_mouse_camera(bool on);
 float mouse_sensitivity();  // degrees per mouse point
 void set_mouse_sensitivity(float s);
+// First-person sensitivity: a multiplier of mouse_sensitivity() in first person and the item aims only (R3 look, bow,
+// hookshot, boomerang, grappling hook, telescope, Picto Box)
+float mouse_first_person_scale();
+void set_mouse_first_person_scale(float s);
 bool first_person_wheel();
 void set_first_person_wheel(bool on);
 // One press readies and automatically uses an item against a locked enemy.

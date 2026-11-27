@@ -5,6 +5,7 @@
 #include "input_map.h"
 #include "mods/mods.h"
 #include "mods/play_context.h"
+#include "mods/camera_mouse.h"
 #include "platform/touch_options.h"
 #include <cassert>
 #include <cmath>
@@ -17,7 +18,7 @@
 
 static uint64_t clock_step=100;
 static bool enabled=true,captured=true,gyro_mouse=true,aiming=false,look=false;
-static float sensitivity=.15f;
+static float sensitivity=.15f,fp_scale=1.f;
 static bool inverted=false,look_pitch=false,aim_left=false;
 static mods::playctx::PlayContext ctx;  // the last play context (issue #666)
 void log_msg(const char*, ...) {}
@@ -25,6 +26,7 @@ namespace mods {
 void filter_pad(input::PadState&);
 bool mouse_camera(){return enabled;} bool mouse_captured(){return captured;}
 float mouse_sensitivity(){return sensitivity;}
+float mouse_first_person_scale(){return fp_scale;}
 bool direct_camera(){return false;} bool direct_boat_speed(){return false;}
 float camera_speed(){return 1;} bool first_person_wheel(){return false;}
 uint64_t step(){return clock_step;} double game_time(){return double(clock_step)/30;}
@@ -57,7 +59,7 @@ void f_0240EBB0_orig(Cpu*){} void f_024FA9C8_orig(Cpu*){}
 void f_0250D4E8_orig(Cpu*){} void f_0250FDC8_orig(Cpu*){} void f_025071FC_orig(Cpu*){}
 void hook_0240EBB0(Cpu*); void hook_025071FC(Cpu*);
 void site_02506CEC(Cpu*); void site_02508380(Cpu*); void site_025083C4(Cpu*);
-void site_0251053C(Cpu*); void site_02510DEC(Cpu*);
+void site_0251053C(Cpu*); void site_02510DEC(Cpu*); void site_02510448(Cpu*);
 }
 static constexpr uint32_t kLinkBase=0x20000000, kCamBase=kLinkBase+0x8000;
 static void map(uint32_t at,size_t size){
@@ -131,11 +133,66 @@ int main(){
     p=sample(20,0);++clock_step;++clock_step;s=subject(0,0);assert(s.f[22].ps0==0);
     p=sample(0,0);p=sample(2,0);s=subject(0,0);assert(turned(s,0,0,.3,0));
     clock_step+=9;e.f[1].ps0=.45;site_02508380(&e);assert(e.f[1].ps0==.45);
+    // more reads in one step (the Pro Controller's KPAD read after the GamePad's, code mods, the scenes' skip check):
+    // movement that arrives after the step's first read is kept for the next step, never thrown away
+    {
+        p=sample(4,0);mods::mouse_add(6,-2);input::PadState again;mods::filter_pad(again);
+        mods::mouse_add(2,0);mods::filter_pad(again);
+        s=subject(0,0);assert(turned(s,0,0,4*.15,0));                  // this step: what the first read saw
+        p=sample(0,0);s=subject(0,0);assert(turned(s,0,0,8*.15,-2*.15));  // the next: the later movement, all of it
+        p=sample(0,0);s=subject(0,0);assert(s.f[22].ps0==0&&s.f[0].ps0==0);
+        // the sum over many split steps: exactly points x sensitivity degrees, as the follow camera
+        double right=0;
+        for(int i=0;i<30;i++){++clock_step;input::PadState q;mods::mouse_add(3,0);mods::filter_pad(q);mods::mouse_add(7,0);
+            mods::filter_pad(q);mods::filter_pad(q);Cpu t=subject(0,0);
+            right+=-(int16_t)(int32_t)((float)(90*std::fmax(-1.f,std::fmin(1.f,-(float)t.f[22].ps0*.04f)))*182.04445f)*(360.0/65536);}
+        p=sample(0,0);s=subject(0,0);
+        right+=-(int16_t)(int32_t)((float)(90*std::fmax(-1.f,std::fmin(1.f,-(float)s.f[22].ps0*.04f)))*182.04445f)*(360.0/65536);
+        assert(std::fabs(right-300*.15)<.02);
+    }
+    // True 60 (decomp build, camera_mouse.h frame_part / step_speeds): the frame's movement spread over its N steps,
+    // with the game's per-step arithmetic (Link's call turns him by dt of the yaw share, m388 moves by dt of the rate)
+    {
+        using namespace mods::camera_mouse;
+        assert(frame_part(9,1,3)==3&&frame_part(6,2,3)==3&&frame_part(3,3,3)==3&&frame_part(5,1,1)==5&&frame_part(4,7,2)==4);
+        auto sp=step_speeds(.04,.5,false);assert(close((float)sp.yaw,.02f)&&close((float)sp.pitch,.02f));
+        sp=step_speeds(.04,.5,true);assert(close((float)sp.yaw,.04f)&&close((float)sp.pitch,.02f));
+        sp=step_speeds(.04,1,false);assert(sp.yaw==.04&&sp.pitch==.04);
+        for(unsigned n:{2u,4u})for(bool cam:{false,true}){
+            const double dt=1.0/n,k=.04,ym=90,pm=70;double yaw_deg=0,m388=0,ry=0,rp=0;
+            for(int frame=0;frame<10;frame++){
+                double left_x=1.7,left_y=-.9;  // degrees this 30 Hz frame (right, down)
+                for(unsigned kk=1;kk<=n;kk++){
+                    const double px=frame_part(left_x,kk,n),py=frame_part(left_y,kk,n);left_x-=px,left_y-=py;
+                    const auto v=step_speeds(k,dt,cam);
+                    const auto st=subject_step(px,py,ry,rp,v.yaw,ym,pm,m388,false,v.pitch);ry=st.rest_yaw,rp=st.rest_pitch;
+                    const float share=std::fmax(-1.f,std::fmin(1.f,-(float)st.x*(float)k));
+                    const double turn=cam?share:share*dt;  // the camera's call: the whole share; Link's: dt of it
+                    yaw_deg+=-(int16_t)(int32_t)((float)(ym*turn)*182.04445f)*(360.0/65536);
+                    m388=(float)(st.y*k*dt+m388);
+                }
+            }
+            const double pitch_deg=(int16_t)(int32_t)((float)(pm*m388)*182.04445f)*(360.0/65536);
+            assert(std::fabs(yaw_deg-17)<.02&&std::fabs(pitch_deg+9)<.02);
+        }
+    }
+    // First-person sensitivity: a multiplier in first person and the item aims only
+    fp_scale=2.5f;p=sample(10,4);s=subject(0,0);assert(turned(s,0,0,10*.15*2.5,4*.15*2.5));
+    fp_scale=.25f;p=sample(40,0);s=subject(0,0);assert(turned(s,0,0,40*.15*.25,0));
+    sensitivity=1.f;fp_scale=1.f;p=sample(30,0);s=subject(0,0);assert(turned(s,0,0,30,0));  // the widened range: 1 degree per point
+    sensitivity=.15f;
     // Mouse camera off: the configured Mouse aiming gyro source gets the mouse again, nothing reaches the subject angle.
     enabled=false;p=sample(5,-5);assert(aiming&&!look&&p.rx==0);s=subject(0,0);assert(s.f[22].ps0==0&&s.f[0].ps0==0);
     enabled=true;
     // Not aiming (on foot): the follow camera keeps its synthetic stick.
     procedure(0x0,false);clock_step+=10;p=sample(5,0);assert(close(p.rx,.4f));s=subject(0,0);assert(s.f[22].ps0==0);
+    // ... and the First-person sensitivity leaves it alone (the follow camera's degrees: points x sensitivity)
+    {
+        fp_scale=3.f;clock_step+=10;p=sample(10,0);
+        Cpu m{};m.r[31]=kCamBase;m.f[25].ps0=8;site_02510448(&m);
+        assert(close((float)ldf32(kCamBase+0x154),mods::camera_mouse::yaw_speed(10,.15f,8)));
+        fp_scale=1.f;
+    }
     // Right stick up/down: Look up and down (issue #661). manualCamera's vertical rate f28 leaves the centre height,
     // radius and field of view (it becomes 0) and goes into the latitude delta f1 alone, -(rate x latitude step).
     {
@@ -194,4 +251,5 @@ int main(){
     puts("Cannon mouse: routing, gyro exclusion, priority, sensitivity, repeated reads and mode transitions PASS");
     puts("Look up and down: the vertical rate goes to the latitude alone, once per manualCamera run, off by default PASS");
     puts("First-person mouse look: degrees per view, once per step, ease, inversion, stale movement, mouse camera off PASS");
+    puts("First-person mouse look: later reads of a step keep their movement, First-person sensitivity, 1 degree per point PASS");
 }
