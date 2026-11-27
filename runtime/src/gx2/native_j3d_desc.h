@@ -8,7 +8,9 @@
 //   Desc  per (material binding, pass, program record, view class): the static part of the draw, made from the game
 //         objects the site's bind calls read. Validity key = exactly those objects' words (program record, frame
 //         record, shader + its display list, draw state, binding state parts, the vertex streams and the material
-//         sampler slots, see J3DNativeDesc.h). The register image is made at define by running the site's own bind
+//         sampler slots, see J3DNativeDesc.h), and the bytes of the shader's display list (checked per draw against the
+//         define's copy: a list rewritten at the same address defines again, #682; native_draw/j3d_desc_lists.h,
+//         WWHD_NATIVE_J3D_DESC_LISTCHECK=0: off). The register image is made at define by running the site's own bind
 //         callees (same code, same inputs) into a capture that is never emitted, in three segments in site order:
 //         program (shader mode, stage programs or the program's display-list call), material (textures/samplers of
 //         the material units, vertex streams/fetch shader) and state (render state of passes 1/2; pass 0's fixed

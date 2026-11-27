@@ -1263,6 +1263,25 @@ void full_draw(const In& in, PacketCapture* cap) {
     }
     LOG("[j3d-d1]   CB_COLOR0 base %08X info %08X, DB base %08X info %08X", in.regs[mmCB_COLOR0_BASE],
         in.regs[mmCB_COLOR0_INFO], in.regs[mmDB_DEPTH_BASE], in.regs[mmDB_DEPTH_INFO]);
+    {  // the programs it drew with, and its program lists: the define's bytes against guest memory now
+      const native_draw::j3ddesc::Desc* d = in.item->desc;
+      LOG("[j3d-d1]   programs: VS %08X+%X PS %08X+%X FS %08X+%X; desc key: binding %08X shader %08X flags %08X "
+          "list %08X+%u", in.regs[mmSQ_PGM_START_VS] << 8, in.regs[mmSQ_PGM_START_VS + 1] << 3,
+          in.regs[mmSQ_PGM_START_PS] << 8, in.regs[mmSQ_PGM_START_PS + 1] << 3, in.regs[mmSQ_PGM_START_FS] << 8,
+          in.regs[mmSQ_PGM_START_FS + 1] << 3, d->key.size() > 0 ? d->key[0] : 0, d->key.size() > 6 ? d->key[6] : 0,
+          d->key.size() > 7 ? d->key[7] : 0, d->key.size() > 11 ? d->key[11] : 0, d->key.size() > 12 ? d->key[12] : 0);
+      size_t off = 0;
+      const auto& s = d->segment[native_draw::j3ddesc::kSegProgram];
+      for (size_t i = 0; i < s.size();) {
+        const uint32_t op = s[i] & 0xFF, k = s[i] >> 8;
+        if (op == gx2::OP_CALL && k == 2 && i + 2 < s.size() && off + s[i + 2] <= d->lists.size()) {
+          const bool same = !std::memcmp(mem::ptr(s[i + 1]), d->lists.data() + off, s[i + 2]);
+          LOG("[j3d-d1]   program list %08X+%u: %s since its define", s[i + 1], s[i + 2], same ? "unchanged" : "CHANGED");
+          off += s[i + 2];
+        }
+        i += 1 + k;
+      }
+    }
     throw;
   }
   g_packetCapture = nullptr;
