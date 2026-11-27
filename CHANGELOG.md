@@ -98,6 +98,16 @@ what is on `devel` and not released yet (also in the
 
 ### Fixed
 
+- **Setup's model preparation no longer skips actors it does not need to** (#697, thanks @radialmonster). Setup
+  prepares the actors' models by showing each one at the title screen, one after the other. Three of them stopped it,
+  though none was at fault: `Hsh2` ("indirect branch to unknown address 00300000"), `Bms2` (an access violation) and
+  `woodbx` (no progress for 60 s). Every 70 seconds or so (in game time) the title plays its story intro, which makes
+  the title's actors anew, Link among them; the preparation took the new ones for its own and deleted them with the
+  actor it was showing, so the camera called into a deleted Link, or the intro never finished and the stage visits
+  after the actors waited for it. The preparation now pauses its actors while the intro runs and goes on after it. And
+  Kalle Demos (`Bkm`) makes his hands and feet after he appears; the preparation deleted him before they came up, and
+  a hand left without him stopped the game at the next actor (`Bms2`). The preparation now waits for what an actor
+  makes and deletes it with the actor. Play itself is unchanged.
 - **Setup's model preparation no longer fails now and then before it starts** (#690). The preparation draws the
   models from the title screen and presses A to get past the notice screen at start. If one of those presses came
   just as the title appeared, the title took it as "start the game" and opened the file select ("Name"); the
