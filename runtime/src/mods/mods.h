@@ -40,6 +40,12 @@ void set_mouse_sensitivity(float s);
 // hookshot, boomerang, grappling hook, telescope, Picto Box)
 float mouse_first_person_scale();
 void set_mouse_first_person_scale(float s);
+// Mouse wheel (Controls > Camera, issue #696): mouse_wheel::Mode (First person, Zoom, Bindings: the default). The
+// built-in mod "first-person" (the old First-person shortcut switch) is on exactly with First person; switching it off
+// leaves Zoom alone. Saved by mods::manager::set_mouse_wheel.
+int mouse_wheel_mode();
+void set_mouse_wheel_mode(int mode);
+bool mouse_wheel_owned();  // First person or Zoom: the wheel's events go to mouse_wheel(), not to the wheel bindings
 bool first_person_wheel();
 void set_first_person_wheel(bool on);
 // One press readies and automatically uses an item against a locked enemy.
@@ -264,6 +270,8 @@ int camera_zoom_hold();            // Zoom while holding (#688): camera_zoom_hol
 void set_camera_zoom_hold(int choice);
 bool camera_zoom_held();           // the zoom button is held now (Look up and down): the stick zooms (controller_play.cpp)
 void camera_zoom_used();           // camera.cpp: the camera zoomed through it (no page turn on L's release)
+int wheel_zoom_smoothing();        // Mouse wheel: Zoom's ease (#696): mouse_wheel::Smoothing (0 Off .. 4; 2 default)
+void set_wheel_zoom_smoothing(int choice);
 bool aim_left_stick();             // First-person aiming: false Right stick (HD, default), true Left stick (classic) (#666)
 void set_aim_left_stick(bool left);
 float steer_swing_degrees(bool player_camera);  // camera.cpp, once per logic step

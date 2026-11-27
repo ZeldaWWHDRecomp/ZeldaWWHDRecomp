@@ -47,9 +47,17 @@
 //   turns the camera through this same path, in degrees from the finger's physical distance, times the
 //   boat factor while Link sails (mModeFlg ModeFlg_IN_SHIP). It needs neither the mouse camera option
 //   nor a captured mouse. Idea from the GreenNaugahyde Android fork (MPL-2.0), reimplemented.
-// First person: R3 already toggles the game's first-person look (measured: R3 at rest -> camera
-//   distance 250 -> 20 in 7 steps, R3 again -> back). The mod adds the mouse wheel: forward enters
-//   first person, backward leaves it, as a one-step R3 press.
+// Mouse wheel (Controls > Camera, issue #696; mouse_wheel.h has the rules):
+//   First person: R3 already toggles the game's first-person look (measured: R3 at rest -> camera
+//   distance 250 -> 20 in 7 steps, R3 again -> back). The wheel forward enters first person, backward leaves it, as
+//   a one-step R3 press.
+//   Zoom: the wheel's notches become manualCamera's own vertical rate f28 at @0251053C (wheel_zoom_rate: 4 steps of
+//   the full rate a notch, given at once or eased out by Wheel zoom smoothing, mouse_wheel::Zoom), so the game zooms (centre height, radius, latitude, field of view)
+//   within its style's limits, at its speed and with its wall check, in either Right stick up/down choice (Look up
+//   and down leaves the wheel's rate in f28 and adds the stick's to the latitude only). nextMode is woken as for the
+//   mouse (a stick magnitude in its decision only) while a zoom waits, so it runs from the follow camera too, in the
+//   styles with manualCamera (on foot, swimming, sailing's free look); first person, aiming, events and the other
+//   camera modes never take it, and what they leave is dropped (mouse_wheel::kDropSteps).
 //
 // Invert camera up/down (Controls; issue #167): the camera's own reads of the right stick's Y are
 //   negated (instruction hooks right after each call, camera_invert.h lists every reader and why),
@@ -80,6 +88,7 @@
 #include "aim_stick.h"
 #include "camera_mouse.h"
 #include "camera_swipe.h"
+#include "mouse_wheel.h"
 #include "steer.h"
 #include "play_context.h"
 #include "../platform/touch_options.h"
@@ -107,6 +116,7 @@ namespace mods {
 namespace {
 constexpr uint32_t kCamSpeed = 0x154;   // dCamera_c: eased turning speed (manual camera)
 constexpr uint32_t kCamStickX = 0x170;  // dCamera_c: right stick x as the camera sees it (negated)
+constexpr uint32_t kCamEventFlags = 0x510, kCamHold = 0x200000;  // dCamera_c::mEventFlags, its hold-still flag
 constexpr uint32_t kCurProc = 0x65F0;   // daPy_lk_c::mCurProc
 constexpr uint32_t kReadyItemBtn = 0x68D9;  // daPy_lk_c::mReadyItemBtn
 
@@ -124,6 +134,8 @@ float g_cannon_x = 0, g_cannon_y = 0;
 uint64_t g_sample_step = ~0ull;
 uint64_t g_move_step = 0;       // logic step of the last mouse movement
 float g_wheel = 0;              // wheel movement not yet used
+mouse_wheel::Zoom g_zoom;       // Mouse wheel: Zoom, the zoom still to give the camera (issue #696)
+uint64_t g_zoom_step = ~0ull;   // the last step manualCamera zoomed by the wheel (traces)
 bool g_left = false;            // left button held (captured)
 uint64_t g_manual_step = ~0ull, g_subject_step = ~0ull;  // last step manualCamera / subjectCamera ran
 std::atomic<uint32_t> g_link{0};
@@ -446,8 +458,22 @@ void filter_pad(input::PadState& s) {
             if (b < 3) s.buttons |= bits[b];
         }
     }
-    // first person on the mouse wheel: a one-step R3 press (the game toggles on R3)
-    if (first_person_wheel() && std::fabs(g_wheel) >= 1.0f) {
+    // Mouse wheel: First person, a one-step R3 press (the game toggles on R3); Zoom, the camera's zoom (issue #696)
+    const int wheel_mode = mouse_wheel_mode();
+    if (wheel_mode == mouse_wheel::kZoom) {
+        if (g_wheel != 0) {
+            const bool fp = in_first_person() || aiming_item(link_proc());
+            if (!fp) mouse_wheel::add(g_zoom, g_wheel, now);
+            if (trace_on()) trace("wheel: zoom %.2f notches%s, pending %.2f steps", g_wheel, fp ? " (first person: none)" : "", g_zoom.pending);
+            g_wheel = 0;
+        }
+        if (in_first_person() || aiming_item(link_proc())) g_zoom.pending = g_zoom.frame_rate = 0;
+        mouse_wheel::drop_stale(g_zoom, now);
+    } else {
+        g_zoom.pending = g_zoom.frame_rate = 0;
+        if (wheel_mode == mouse_wheel::kBindings) g_wheel = 0;
+    }
+    if (wheel_mode == mouse_wheel::kFirstPerson && std::fabs(g_wheel) >= 1.0f) {
         bool want = g_wheel > 0;  // forward: into first person, backward: out
         g_wheel = 0;
         if (now >= g_r3_ready && want != in_first_person()) {
@@ -537,6 +563,11 @@ extern "C" void site_025104A0(Cpu* c) { manual_speed(c); }
 
 // the mouse or the swipe camera fed this step (g_synth is only set while one of them is active)
 static bool mouse_step() { return g_synth && g_synth_step + 1 >= step(); }
+// Mouse wheel: Zoom: a zoom waits for manualCamera
+static bool zoom_waits() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return mouse_wheel::wants(g_zoom);
+}
 
 // The manual-mode wake-up belongs to the camera's decision, never to the pad: modes without
 // direct mouse sites must see the proportional fallback. Let nextMode retain all its native
@@ -549,8 +580,10 @@ extern "C" void hook_024FA9C8(Cpu* c) {
         const int16_t style = (int16_t)ld16(GD(0x10049350) + type * 0x40 + 0x18 + 12 * 2);
         manual = style >= 0 && ld32(GD(0x1004487C) + style * 0x84 + 4) == 10;  // MANUAL_CAMERA
     }
-    const bool wake = manual && mouse_step() && !in_first_person() && !aiming_item(link_proc());
     const float value = (float)ldf32(cam + 0x178), y = (float)ldf32(cam + 0x174);
+    const bool zoom = zoom_waits();
+    const bool wake = manual && (mouse_step() || (zoom && value < 0.45f)) && !in_first_person() &&
+                      !aiming_item(link_proc());
     if (wake) {
         stf32(cam + 0x178, 0.45f);  // above manual-start threshold, below stick-as-button threshold
         stf32(cam + 0x174, 0.0f);
@@ -563,6 +596,17 @@ extern "C" void hook_024FA9C8(Cpu* c) {
     }
     // the camera's mode changes (0 follow, 1 targeting without a target, 2 with one, 4 first person, 12 manual ...)
     if (trace_on() && c->r[3] != cur) trace("camera nextMode %u -> %u", cur, c->r[3]);
+    // Mouse wheel: Zoom: the camera holds still after an event (state loads, talks, doors: mEventFlags 0x200000) and
+    // runs no engine until the stick, a button or Link moves (dCamera_c::Run 024FE3E8, its hold branch). The mouse
+    // releases it through its pad stick; a waiting zoom releases it as the right stick does, once nextMode chose the
+    // manual camera
+    if (zoom && manual && c->r[3] == 12 && (ld32(cam + kCamEventFlags) & kCamHold)) {
+        st32(cam + kCamEventFlags, ld32(cam + kCamEventFlags) & ~kCamHold);
+        trace("wheel: the camera's hold released");
+    }
+    // Mouse wheel: Zoom: the distance on every step while the wheel zooms and 3 s after (wheel run measurements)
+    if (trace_on() && g_zoom_step != ~0ull && step() <= g_zoom_step + 90)
+        trace("wheel camera: mode %u R=%.1f V=%d", c->r[3], ldf32(cam + 0x3C), (int16_t)ld16(cam + 0x40));
 }
 
 // f28: vertical stick rate (+1 = stick up = V decreases by PER degrees per step: the latitude step, [sp+0x14] at the
@@ -616,16 +660,40 @@ static void look_pitch_take(Cpu* c, double per) {
 static void look_pitch_give(Cpu* c) {
     if (!g_look_pitch.pending) return;
     g_look_pitch.pending = false;
-    c->f[1].ps0 = c->f[1].ps1 = (float)-(g_look_pitch.rate * g_look_pitch.per);
+    // added to the game's own delta: the mouse wheel's zoom rate (wheel_zoom_rate) stays in f28, -(rate x step)
+    c->f[1].ps0 = c->f[1].ps1 = (float)(c->f[1].ps0 - g_look_pitch.rate * g_look_pitch.per);
     static uint64_t n = 0;
     if (trace_on() && (n++ % 10) == 0)
         trace("look pitch: rate %.3f x latitude step %.2f -> %.3f degrees (limits %.1f .. %.1f)", g_look_pitch.rate,
               g_look_pitch.per, c->f[1].ps0, c->f[2].ps0, c->f[3].ps0);
 }
+// Mouse wheel: Zoom (issue #696, mouse_wheel.h): this step's part of the wheel's zoom, added to f28 after Look up
+// and down took the stick's (and the mouse's) rate, so it always zooms. True 60: each step of a 30 Hz frame gets the
+// frame's rate, as the game's stick (manRangeAdd takes x dt).
+static void wheel_zoom_rate(Cpu* c) {
+    const float part = mouse_wheel::smooth_part(wheel_zoom_smoothing());  // Wheel zoom smoothing (Off: all at once)
+    float w;
+    double pending;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+#if WWHD_DECOMP
+        if (t60::active() && wwhd_t60_steps > 1) w = mouse_wheel::frame_rate(g_zoom, wwhd_t60_frame, step(), part);
+        else
+#endif
+            w = mouse_wheel::rate(g_zoom, step(), part);
+        pending = g_zoom.pending;
+    }
+    if (w == 0) return;
+    const double before = c->f[28].ps0;
+    c->f[28].ps0 = mouse_wheel::combine(before, w);
+    g_zoom_step = step();
+    if (trace_on()) trace("wheel zoom: rate %.3f (game %.3f) -> f28 %.3f, pending %.2f", w, before, c->f[28].ps0, pending);
+}
 namespace mods {
 void manual_pitch_rate(Cpu* c, double per) {
     mouse_pitch_rate(c, per);
     look_pitch_take(c, per);
+    wheel_zoom_rate(c);
 }
 }  // namespace mods
 extern "C" void site_0251053C(Cpu* c) { mods::manual_pitch_rate(c, ldf32(c->r[1] + 0x14)); }

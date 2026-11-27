@@ -4,7 +4,9 @@
 //   WWHD_MOD_DIRECT_CAMERA=1   direct right-stick camera (WWHD_MOD_CAMERA_SPEED=1.5 multiplier)
 //   WWHD_MOD_MOUSE_CAMERA=1    mouse camera (WWHD_MOD_MOUSE_SENS=0.15 degrees per point; WWHD_MOD_MOUSE_FP=1.0 the
 //                              first-person / aiming multiplier of it)
-//   WWHD_MOD_FIRST_PERSON=1    first person on R3 / mouse wheel
+//   WWHD_MOD_FIRST_PERSON=1    first person on the mouse wheel (Mouse wheel: First person)
+//   WWHD_MOUSE_WHEEL=0|1|2     Mouse wheel: 0 first person, 1 zoom, 2 bindings (or first-person / zoom / bindings;
+//                              mouse_wheel.h, issue #696); not saved while set
 //   WWHD_MOD_QUICK_USE=1       one-press items against locked enemies (quick_use.cpp)
 //   WWHD_MOD_QUICK_DOORS=1     quick doors (WWHD_MOD_DOOR_MODE=walk: walk through, WWHD_MOD_WALK_DOORS_A=1 with A)
 //   WWHD_MOD_FAST_SCENES=1     fast scene changes
@@ -15,10 +17,12 @@
 //                              Link's control), one line per event with the logic step
 #include "mods.h"
 #include "move_speed.h"
+#include "mouse_wheel.h"
 #include "sprint_pose.h"
 #include "guest_addr.h"
 #include "../input.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstdlib>
@@ -47,7 +51,10 @@ std::atomic<float> g_speed{env_f("WWHD_MOD_CAMERA_SPEED", 1.0f)};
 std::atomic<bool> g_mouse{env_on("WWHD_MOD_MOUSE_CAMERA")};
 std::atomic<float> g_sens{env_f("WWHD_MOD_MOUSE_SENS", 0.15f)};
 std::atomic<float> g_fp_sens{env_f("WWHD_MOD_MOUSE_FP", 1.0f)};
-std::atomic<bool> g_fp{env_on("WWHD_MOD_FIRST_PERSON")};
+std::atomic<int> g_wheel_mode{[] {  // mouse_wheel::Mode (issue #696)
+    const int m = mouse_wheel::parse(getenv("WWHD_MOUSE_WHEEL"));
+    return m >= 0 ? m : env_on("WWHD_MOD_FIRST_PERSON") ? int(mouse_wheel::kFirstPerson) : mouse_wheel::kDefault;
+}()};
 std::atomic<bool> g_doors{env_on("WWHD_MOD_QUICK_DOORS")};
 std::atomic<int> g_door_mode{[] {
     const char* e = getenv("WWHD_MOD_DOOR_MODE");
@@ -159,8 +166,14 @@ void set_mouse_first_person_scale(float s) {
     g_fp_sens = s;
     LOG("[mods] first-person mouse sensitivity x%.2f", s);
 }
-bool first_person_wheel() { return g_fp.load(std::memory_order_relaxed); }
-void set_first_person_wheel(bool on) { g_fp = on; note("first person on R3 / mouse wheel", on); }
+int mouse_wheel_mode() { return g_wheel_mode.load(std::memory_order_relaxed); }
+void set_mouse_wheel_mode(int m) {
+    m = std::clamp(m, 0, mouse_wheel::kModeCount - 1);
+    if (g_wheel_mode.exchange(m) != m) LOG("[mods] mouse wheel: %s", mouse_wheel::name(m));
+}
+bool mouse_wheel_owned() { return mouse_wheel::owns_wheel(mouse_wheel_mode()); }
+bool first_person_wheel() { return mouse_wheel_mode() == mouse_wheel::kFirstPerson; }
+void set_first_person_wheel(bool on) { set_mouse_wheel_mode(mouse_wheel::from_switch(mouse_wheel_mode(), on)); }
 bool quick_doors() { return g_doors.load(std::memory_order_relaxed); }
 void set_quick_doors(bool on) { g_doors = on; note("quick doors", on); }
 DoorMode door_mode() { return DoorMode(g_door_mode.load(std::memory_order_relaxed)); }

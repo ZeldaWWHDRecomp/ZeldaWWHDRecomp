@@ -83,7 +83,7 @@ controller and the keyboard:
 - **Off**: the stick always looks up and down.
 
 The mouse camera's up/down zooms too while the button is held. The mouse wheel
-stays first person (Mouse camera › First person on the wheel). Saved as
+can zoom too, in either choice: **Mouse wheel: Zoom** (see Mouse and keyboard). Saved as
 `cameraZoomHold` (0 Off, 1 L, 2 ZL); `WWHD_CAM_ZOOM_HOLD` overrides it for a run.
 
 **First-person aiming** (Controls → Camera, the item menu's settings page under
@@ -307,8 +307,44 @@ settings and text prompts take priority over game bindings. A button held during
 these transitions stays blocked until released, without blocking other buttons
 or other SDL mice.
 
-**First person on the mouse wheel** takes priority over `WheelUp` and `WheelDown`.
-Turn that option off to use wheel bindings. When left click is bound, it replaces
+**Mouse wheel** (Controls → Camera, the item menu's settings page under Camera, and
+the macOS Controls window; issue #696) chooses what the wheel does in the game window,
+with or without the mouse camera:
+
+- **First person**: forward enters first person, backward leaves it (a short R3
+  press; R3 itself toggles first person in the game anyway). This is the former
+  **First-person shortcut** switch turned on.
+- **Zoom**: forward brings the camera closer, backward takes it further, with the
+  game's own zoom: the same thing the right stick's up/down does in the original
+  (**Right stick up/down: Zoom (original)**), with the game's limits on how close and
+  how far, its wall checks. One notch zooms as far as the right stick held fully up or
+  down for 4 logic steps (2/15 s); a trackpad's small scrolls add their share, so it
+  zooms smoothly; scrolling the other way first stops the zoom. **Wheel zoom smoothing**
+  (right under it, with Zoom only) is how long the camera takes to catch up with the
+  wheel: **Off** gives each notch's zoom at once, **0.15 s**, **0.3 s** (the default),
+  **0.5 s** or **1 s** ease it out (it moves quickly at first and slows down as it
+  arrives; the time is when 95 % of it is done). Either way the game still moves the
+  drawn camera there with its own follow, as with the stick. Saved as
+  `wheelZoomSmoothing` (0 Off, 1-4); `WWHD_WHEEL_ZOOM_SMOOTH` overrides it for a run. It works in either **Right stick up/down** choice (with Look up and
+  down the stick looks and the wheel zooms) and at every frame rate (30, 60 and 120
+  fps, and the decomp version's true 60 / 120 fps logic: a notch is the same zoom).
+  It zooms the free camera: on foot, swimming and in the boat's free look, the styles
+  where the right stick zooms in the game. In first person, while aiming, in events,
+  menus and the other camera modes the wheel does nothing (nothing is kept for later).
+  At the closest or furthest zoom, more scrolling that way does nothing (on Outset, for
+  example, the distance goes from 150 to 700 units, about 80 a notch, and the height
+  angle from -30 to 30 degrees). Like the right stick, the wheel also ends the camera's
+  rest after an event (a talk, a door, loading a state), and the camera keeps the zoom
+  until the game's own camera rules end the free camera (Link targets, an event, and so on).
+- **Bindings**, the default: the wheel is the `WheelUp` / `WheelDown` bindings
+  (nothing by default). This is the former switch turned off.
+
+First person and Zoom take priority over `WheelUp` and `WheelDown`. A saved
+First-person shortcut switch becomes the choice (on: First person, off: Bindings).
+Saved as `mod.mouse-wheel` (0 First person, 1 Zoom, 2 Bindings; the built-in mod
+`first-person` stays on exactly with First person); `WWHD_MOUSE_WHEEL=0/1/2` (or
+`first-person` / `zoom` / `bindings`) overrides it for a run, and
+`WWHD_MOD_FIRST_PERSON=1` still starts with First person. When left click is bound, it replaces
 the mouse camera's automatic “fire the aimed item” action. Middle click releases
 the pointer only when `Mouse3` is unbound; with it bound, use Escape to release.
 On macOS, unbound side buttons also retain their pointer-release behavior.

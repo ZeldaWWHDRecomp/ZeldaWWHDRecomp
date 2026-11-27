@@ -3,9 +3,11 @@
 #include "mods.h"
 #include "camera_mouse.h"
 #include "climb.h"
+#include "mouse_wheel.h"
 #include "game_progress_host.h"
 #include "achievements_host.h"
 #include "../overlay/hostui.h"
+#include <algorithm>
 #include <cstdlib>
 #include <cmath>
 #include <string>
@@ -28,6 +30,7 @@ const Entry catalogue[] = {
      "(R3 look, bow, hookshot, boomerang, grappling hook, telescope, Picto Box) as in a PC shooter, or to aim the boat cannon; "
      "Esc releases it.",
      "WWHD_MOD_MOUSE_CAMERA", mouse_camera, set_mouse_camera},
+    // the Mouse wheel choice's First person (issue #696, mouse_wheel.h): Controls shows the choice, not this switch
     {"first-person", "First-person shortcut", "Camera",
      "Enter first person with R3 or the mouse wheel.",
      "WWHD_MOD_FIRST_PERSON", first_person_wheel, set_first_person_wheel},
@@ -116,6 +119,11 @@ const Entry catalogue[] = {
 };
 std::string key(const Entry& entry) { return std::string("mod.")+entry.id+".enabled"; }
 bool player_preferences() { return !std::getenv("WWHD_NO_HOST_INPUT"); }
+constexpr const char* kMouseWheelKey = "mod.mouse-wheel";  // mouse_wheel::Mode (issue #696)
+void save_mouse_wheel() {
+    if (player_preferences() && !std::getenv("WWHD_MOUSE_WHEEL"))
+        hostui::set(kMouseWheelKey, std::to_string(mouse_wheel_mode()).c_str());
+}
 const NumberOption traversal_catalogue[] = {
     {"mod.ladder-speed.factor", "ladder-speed.factor", "WWHD_MOD_LADDER_FACTOR", ladder_speed_factor, set_ladder_speed_factor},
     {"mod.sidle-speed.factor", "sidle-speed.factor", "WWHD_MOD_SIDLE_FACTOR", sidle_speed_factor, set_sidle_speed_factor},
@@ -147,10 +155,19 @@ void load_saved() {
     if (!player_preferences()) return;
     for (const auto& entry : catalogue) {
         // An explicitly supplied zero also overrides a saved enabled preference.
-        if (std::getenv(entry.startup_env) || (std::string_view(entry.id) == "target-letterbox" && std::getenv("WWHD_TARGET_LETTERBOX_MODE"))) continue;
+        if (std::getenv(entry.startup_env) || (std::string_view(entry.id) == "target-letterbox" && std::getenv("WWHD_TARGET_LETTERBOX_MODE")) ||
+            (std::string_view(entry.id) == "first-person" && std::getenv("WWHD_MOUSE_WHEEL")))
+            continue;
         std::string value;
         if (hostui::get(key(entry).c_str(), value) && (value == "0" || value == "1"))
             if (entry.enabled() != (value == "1")) entry.apply(value == "1");
+    }
+    // Mouse wheel (issue #696): the choice, once saved; before that the old switch above gave First person (on) or
+    // Bindings (off, the default)
+    if (!std::getenv("WWHD_MOUSE_WHEEL") && !std::getenv("WWHD_MOD_FIRST_PERSON")) {
+        std::string v;
+        if (hostui::get(kMouseWheelKey, v) && v.size() == 1 && v[0] >= '0' && v[0] < '0' + mouse_wheel::kModeCount)
+            set_mouse_wheel_mode(v[0] - '0');
     }
     // Test aid for the settings round trip (a run that saves player preferences): WWHD_TEST_BUILTIN_SET=<id>=<0|1>
     // switches one built-in mod as its switch in the Settings window does, saved for the next start.
@@ -297,6 +314,18 @@ bool set_enabled(std::string_view id, bool on) {
     if (entry->enabled() != on) entry->apply(on);
     if (player_preferences()) hostui::set(key(*entry).c_str(), on ? "1" : "0");
     packages::remember_builtin(std::string(id), on);
+    if (id == "first-person") save_mouse_wheel();  // the choice follows the switch
+    return true;
+}
+bool set_mouse_wheel(int mode) {
+    mode = std::clamp(mode, 0, mouse_wheel::kModeCount - 1);
+    const bool fp = mode == mouse_wheel::kFirstPerson;
+    std::string error;
+    if (first_person_wheel() != fp && !packages::builtin_change_allowed("first-person", fp, error)) return false;
+    set_mouse_wheel_mode(mode);
+    if (player_preferences()) hostui::set("mod.first-person.enabled", fp ? "1" : "0");
+    packages::remember_builtin("first-person", fp);
+    save_mouse_wheel();
     return true;
 }
 void disable_all() {

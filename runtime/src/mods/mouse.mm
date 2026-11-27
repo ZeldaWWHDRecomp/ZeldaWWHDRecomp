@@ -1,7 +1,7 @@
 // Mouse capture for the mouse camera (macOS). With the mod on, a click into the TV window captures
 // the pointer: it is hidden and detached from the cursor position, and its movement goes to the
 // camera (camera.cpp). Esc, a middle click, switching the mod off or leaving the window releases it.
-// The mouse wheel (first person mod) works whenever the TV window is the key window.
+// The mouse wheel (Mouse wheel: First person or Zoom, issue #696) works whenever the TV window is the key window.
 // WWHD_NO_HOST_INPUT ignores the real mouse (test runs; WWHD_TEST_MOUSE injects movement); with WWHD_TEST_POST_MOUSE
 // the clicks a test posts (gfx/overlay_appkit.mm) take this path, and a capture leaves the real pointer alone.
 #import <AppKit/AppKit.h>
@@ -110,11 +110,11 @@ void mouse_init(void* tv_window) {
         }
         if (e.type == NSEventTypeScrollWheel) {
             float dy = (float)e.scrollingDeltaY; if (e.hasPreciseScrollingDeltas) dy /= 10.f;
-            input::mouse_binding_wheel(dy, eligible && !first_person_wheel());
+            input::mouse_binding_wheel(dy, eligible && !mouse_wheel_owned());
         }
         if (overlay::captures() || overlay::layer_takes_pointer()) return e;  // the settings overlay, the text prompt or the editor's overlays have the mouse (gfx/overlay_appkit.mm)
         if (e.type == NSEventTypeScrollWheel) {
-            if (first_person_wheel() && (in_tv(e) || mouse_captured())) {
+            if (mouse_wheel_owned() && (in_tv(e) || mouse_captured())) {
                 // a wheel notch is about 1 line; trackpads send many small precise deltas
                 float dy = (float)e.scrollingDeltaY;
                 if (e.hasPreciseScrollingDeltas) dy /= 10.0f;

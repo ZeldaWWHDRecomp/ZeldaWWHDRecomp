@@ -19,7 +19,7 @@ void controller_values(float* v){std::fill(v,v+input_map::kPadCount,0.f);}
 // The isolated AppKit target uses camera-setting fixtures, like its input/window fixtures.
 // Exercise the actual controls' routing without linking the game or writing player settings.
 namespace {
-bool cameraFlags[3]{};
+bool cameraFlags[2]{};
 float cameraSpeed = 1.f, mouseSensitivity = .15f, mouseFirstPerson = 1.f;
 }
 namespace mods {
@@ -34,6 +34,11 @@ int camera_zoom_hold() { return zoomHold; }
 void set_camera_zoom_hold(int choice) { zoomHold = choice; }
 bool aimLeft = false;
 bool aim_left_stick() { return aimLeft; }
+int wheelMode = 2;  // Bindings, the default (mouse_wheel.h)
+int mouse_wheel_mode() { return wheelMode; }
+int wheelSmooth = 2;  // 0.3 s, the default
+int wheel_zoom_smoothing() { return wheelSmooth; }
+void set_wheel_zoom_smoothing(int c) { wheelSmooth = c; }
 void set_aim_left_stick(bool left) { aimLeft = left; }
 }
 namespace game_settings {
@@ -45,16 +50,17 @@ namespace mods::manager {
 const Entry* find(std::string_view id) {
     static const Entry entries[] = {
         {"mouse-camera","Mouse camera","","","",[] { return cameraFlags[0]; },nullptr},
-        {"direct-camera","Direct camera","","","",[] { return cameraFlags[1]; },nullptr},
-        {"first-person","First person","","","",[] { return cameraFlags[2]; },nullptr}};
+        {"direct-camera","Direct camera","","","",[] { return cameraFlags[1]; },nullptr}};
     for (const auto& entry : entries) if (id == entry.id) return &entry;
     return nullptr;
 }
 bool set_enabled(std::string_view id, bool enabled) {
-    const char* ids[] = {"mouse-camera","direct-camera","first-person"};
-    for (int i=0;i<3;++i) if (id == ids[i]) { cameraFlags[i]=enabled; return true; }
+    const char* ids[] = {"mouse-camera","direct-camera"};
+    for (int i=0;i<2;++i) if (id == ids[i]) { cameraFlags[i]=enabled; return true; }
     return false;
 }
+bool wheelLocked = false;  // a save profile locks the first-person switch
+bool set_mouse_wheel(int mode) { if (wheelLocked) return false; mods::wheelMode = mode; return true; }
 }
 // counts what the menu bar's key equivalents trigger (menu.mm's targets, without the game)
 @interface MenuCounter : NSObject
@@ -198,12 +204,32 @@ int main() {
             [g_controls.bindingTarget selectItemAtIndex:0];[g_controls bindingTargetChanged:g_controls.bindingTarget];
             input_map::set_current(presetBefore,false);[g_controls reloadFromModel];
         }
-        for (int i=0;i<3;++i) {
+        assert(g_controls.cameraButtons.count==2);
+        for (int i=0;i<2;++i) {
             NSButton* button = g_controls.cameraButtons[i];
             button.state = NSControlStateValueOn;
             [g_controls cameraChanged:button];
-            for (int j=0;j<3;++j) assert(cameraFlags[j] == (j<=i));
+            for (int j=0;j<2;++j) assert(cameraFlags[j] == (j<=i));
         }
+        // #696: Mouse wheel, Bindings by default (the old First-person shortcut switch's off); a locked switch stays
+        assert(g_controls.mouseWheel.numberOfItems==3 && g_controls.mouseWheel.indexOfSelectedItem==2);
+        // Wheel zoom smoothing: 0.3 s by default, only active with Zoom
+        assert(g_controls.wheelSmoothing.numberOfItems==5 && g_controls.wheelSmoothing.indexOfSelectedItem==2 &&
+               !g_controls.wheelSmoothing.enabled && [[g_controls.wheelSmoothing itemTitleAtIndex:0] isEqualToString:@"Off"]);
+        assert([[g_controls.mouseWheel itemTitleAtIndex:0] isEqualToString:@"First person"] &&
+               [[g_controls.mouseWheel itemTitleAtIndex:1] isEqualToString:@"Zoom"]);
+        [g_controls.mouseWheel selectItemAtIndex:1];[g_controls mouseWheelChanged:g_controls.mouseWheel];
+        assert(mods::wheelMode==1 && g_controls.wheelSmoothing.enabled);
+        [g_controls.wheelSmoothing selectItemAtIndex:0];[g_controls wheelSmoothingChanged:g_controls.wheelSmoothing];
+        assert(mods::wheelSmooth==0);
+        mods::wheelSmooth=4;[g_controls syncOptions];assert(g_controls.wheelSmoothing.indexOfSelectedItem==4);
+        mods::wheelSmooth=2;[g_controls syncOptions];
+        mods::manager::wheelLocked=true;
+        [g_controls.mouseWheel selectItemAtIndex:0];[g_controls mouseWheelChanged:g_controls.mouseWheel];
+        assert(mods::wheelMode==1 && g_controls.mouseWheel.indexOfSelectedItem==1);
+        mods::manager::wheelLocked=false;
+        mods::wheelMode=0;[g_controls syncOptions];assert(g_controls.mouseWheel.indexOfSelectedItem==0);
+        mods::wheelMode=2;[g_controls syncOptions];assert(g_controls.mouseWheel.indexOfSelectedItem==2 && !g_controls.wheelSmoothing.enabled);
         g_controls.cameraSpeed.floatValue=1.75f;
         [g_controls cameraSpeedChanged:g_controls.cameraSpeed];
         g_controls.mouseSensitivity.floatValue=.25f;

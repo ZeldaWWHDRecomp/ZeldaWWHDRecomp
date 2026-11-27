@@ -353,7 +353,7 @@ static bool overlay_event(const SDL_Event& event){
  default:return false;
  }
 }
-static PadState keyboard_state(bool host){bool keys[256];for(int i=0;i<256;i++)keys[i]=(host&&g_keys[i])||g_script_keys[i];return g_mouse_bindings.read(input_map::current(), host && mods::mouse_captured() && !overlay::captures() && !g_done, keys, screenshot::key_down, !mods::first_person_wheel());}
+static PadState keyboard_state(bool host){bool keys[256];for(int i=0;i<256;i++)keys[i]=(host&&g_keys[i])||g_script_keys[i];return g_mouse_bindings.read(input_map::current(), host && mods::mouse_captured() && !overlay::captures() && !g_done, keys, screenshot::key_down, !mods::mouse_wheel_owned());}
 // ---- rumble -----------------------------------------------------------------------------------
 // The game's requests (VPADControlMotor / WPADControlMotor in runtime/src/hle) are kept by
 // rumble.h; update() sets the motors from them on the main thread, with the rest of the input. A
@@ -1078,7 +1078,7 @@ void handle_event(const SDL_Event& event){
    float y=event.wheel.y; if(event.wheel.direction==SDL_MOUSEWHEEL_FLIPPED)y=-y;
    if (y!=0 && event.wheel.which!=SDL_TOUCH_MOUSEID && game_window(event.wheel.windowID) &&
        overlay::pointer_shortcut(y>0?input_map::kWheelUp:input_map::kWheelDown,true)) return;
-   mouse_binding_wheel(y,eligible && event.wheel.which != SDL_TOUCH_MOUSEID && event.wheel.windowID==SDL_GetWindowID(g_prompt_window) && !mods::first_person_wheel());
+   mouse_binding_wheel(y,eligible && event.wheel.which != SDL_TOUCH_MOUSEID && event.wheel.windowID==SDL_GetWindowID(g_prompt_window) && !mods::mouse_wheel_owned());
   }
  }
  if(overlay::captures())mods::update_mouse();

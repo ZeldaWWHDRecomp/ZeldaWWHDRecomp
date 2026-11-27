@@ -942,6 +942,25 @@ void register_builtin() {
         add(std::move(it));
     }
     {
+        Item it;  // issue #696 (mods/mouse_wheel.h); the old First person on R3 / wheel switch is First person
+        it.id = "camera.mouse-wheel", it.tab = "camera", it.label = "Mouse wheel", it.kind = Kind::Choice;
+        it.help = "Zoom: forward brings the camera closer, back further, as the game's zoom. Bindings: Wheel up / down.";
+        it.choices = {"First person", "Zoom", "Bindings"};
+        it.get = [] { return (float)mods::mouse_wheel_mode(); };
+        it.set = [](float v) { mods::manager::set_mouse_wheel((int)std::lround(v)); };
+        add(std::move(it));
+    }
+    {
+        Item it;  // issue #696 (mods/mouse_wheel.h kSmoothSeconds): only with Mouse wheel: Zoom
+        it.id = "camera.wheel-smoothing", it.tab = "camera", it.label = "Wheel zoom smoothing", it.kind = Kind::Choice;
+        it.help = "How long the camera takes to catch up with the wheel's zoom. Off: at once.";
+        it.choices = {"Off", "0.15 s", "0.3 s", "0.5 s", "1 s"};
+        it.get = [] { return (float)mods::wheel_zoom_smoothing(); };
+        it.set = [](float v) { mods::set_wheel_zoom_smoothing((int)std::lround(v)); };
+        it.enabled = [] { return mods::mouse_wheel_mode() == 1; };
+        add(std::move(it));
+    }
+    {
         Item it;
         it.id = "camera.walk-direction", it.tab = "camera", it.label = "Walking direction", it.kind = Kind::Choice;
         it.help = "Kept: Link walks on the way you pushed the stick while the camera turns.";
@@ -959,8 +978,6 @@ void register_builtin() {
         it.enabled = [] { return mods::steer_mode() != 0; };
         add(std::move(it));
     }
-    add(builtin_toggle("camera", "first-person", "First person on R3 / wheel",
-                       "R3 or the mouse wheel enters and leaves first person."));
     {
         Item it;
         it.id = "target-letterbox", it.tab = "camera", it.label = "Letterbox while targeting", it.kind = Kind::Choice;

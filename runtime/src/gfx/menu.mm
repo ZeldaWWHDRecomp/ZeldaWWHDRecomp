@@ -620,8 +620,14 @@ void install_menu(NSWindow* tv) {
     for (float se : {0.08f, 0.15f, 0.3f})
         toggle(gp, [NSString stringWithFormat:@"        Sensitivity %s", se < 0.1f ? "low" : se < 0.2f ? "medium" : "high"],
                ^BOOL { return mods::mouse_sensitivity() == se; }, ^(BOOL) { mods::set_mouse_sensitivity(se); });
-    toggle(gp, @"    First person on R3 / mouse wheel", ^BOOL { return mods::first_person_wheel(); }, ^(BOOL on) { mods::set_first_person_wheel(on); },
-           @"Right-stick click (keyboard V) or wheel forward enters the first-person view, wheel back leaves it");
+    // Mouse wheel (issue #696, mods/mouse_wheel.h): one of three, saved
+    [gp addItemWithTitle:@"    Mouse wheel" action:nil keyEquivalent:@""].enabled = NO;
+    for (auto [title, mode, tip] : {std::tuple{@"        First person", 0, @"Wheel forward enters the first-person view, wheel back leaves it"},
+                                    {@"        Zoom", 1, @"Wheel forward zooms the camera in, back out, as the right stick does in the game"},
+                                    {@"        Bindings", 2, @"The wheel is the Wheel up / Wheel down bindings in Controls"}}) {
+        const int m = mode;
+        toggle(gp, title, ^BOOL { return mods::mouse_wheel_mode() == m; }, ^(BOOL) { mods::manager::set_mouse_wheel(m); }, tip);
+    }
     [gp addItem:[NSMenuItem separatorItem]];
     toggle(gp, @"Climb any wall", ^BOOL { return mods::climb_enabled(); }, ^(BOOL on) { mods::set_climb_enabled(on); },
            @"Grab and climb any wall (stamina wheel; B or A lets go)");
