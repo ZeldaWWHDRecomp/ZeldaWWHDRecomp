@@ -223,6 +223,33 @@ class ShippedTools(unittest.TestCase):
                     self.assertEqual(json.loads(lines[-1][len("WWHD-PROBE "):]), {},
                                      "imports of this tool that the release Python cannot resolve")
 
+    def test_decomp_tools_load_under_the_release_python(self):
+        # setup starts these with the release Python (decomp_setup.py); gen.py once imported its sibling native_returns
+        # before putting its own folder on sys.path. Loaded without running main (most need the decompilation);
+        # decl_lint_run.py imports the decompilation's own modules, so it is left out.
+        tools = [rel for rel in package.DECOMP_TOOLS
+                 if rel.endswith(".py") and "capstone_shim" not in rel and not rel.endswith("decl_lint_run.py")]
+        self.assertIn("tools/decomp_build/gen.py", tools)
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary = os.path.realpath(temporary)
+            tree = os.path.join(temporary, "release")
+            for rel in package.TOOL_FILES + package.INSTALLER_FILES + package.DECOMP_TOOLS:
+                target = os.path.join(tree, rel)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.copy2(os.path.join(ROOT, rel), target)
+            python = release_python(tree) or [sys.executable, "-I", "-S"]
+            elsewhere = os.path.join(temporary, "elsewhere")
+            os.makedirs(elsewhere)
+            env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP")}
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
+            for rel in tools:
+                with self.subTest(tool=rel):
+                    loaded = subprocess.run(python + ["-c", "import runpy, sys; runpy.run_path(sys.argv[1])",
+                                                      os.path.join(tree, rel)], cwd=elsewhere, env=env,
+                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
+                    self.assertNotIn("ModuleNotFoundError", loaded.stderr)
+                    self.assertEqual(loaded.returncode, 0, loaded.stderr[-400:])
+
 
 if __name__ == "__main__":
     unittest.main()

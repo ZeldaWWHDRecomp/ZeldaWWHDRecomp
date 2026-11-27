@@ -88,12 +88,12 @@ class _Output(io.StringIO):
         if exc[0] is None:
             text = self.getvalue()
             try:
-                with open(self.path, encoding="utf-8") as old:
+                with open(self.path, encoding="utf-8", newline="") as old:
                     same = old.read() == text
             except (OSError, UnicodeDecodeError):
                 same = False
             if not same:
-                with open(self.path, "w", encoding="utf-8") as f:
+                with open(self.path, "w", encoding="utf-8", newline="\n") as f:
                     f.write(text)
         return super().__exit__(*exc)
 

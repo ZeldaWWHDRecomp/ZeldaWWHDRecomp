@@ -18,6 +18,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 
+# PYTHONPATH (decomp_setup.py puts capstone there for decl_lint.py) onto sys.path: an isolated Python, such as the
+# Windows installer's embedded one (python3xx._pth), ignores PYTHONPATH
+sys.path[:0] = [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p and p not in sys.path]
 sys.path.insert(0, os.path.join(os.environ["WWHD_DECL_DECOMP"], "tools", "verify"))
 if os.path.join(ROOT, "tools") not in sys.path:
     sys.path.append(os.path.join(ROOT, "tools"))
