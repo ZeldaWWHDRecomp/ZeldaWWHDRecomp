@@ -3319,7 +3319,9 @@ void controls_prompts_page(input_map::Mapping& m) {
          "roll shows B and sword shows A. Automatic follows the connected pad; Nintendo "
          "keeps the game's look. By label keeps its existing automatic Xbox fallback. "
          "Original keeps the game's look. Custom bindings need four distinct face buttons; "
-         "otherwise the original icons are used.");
+         "otherwise the original icons are used. A face button taken by Jump anywhere, the moon jump or "
+         "Slow walk keeps the look; the moved action's prompt names the button that now carries it, and two "
+         "game actions off the faces use the original icons.");
     if (m.prompts == P::kAuto) disabled_after(std::string("Using ") +
                    (look.face == input_map::FaceStyle::kPlayStation ? "PlayStation"
                     : look.face == input_map::FaceStyle::kXbox      ? "Xbox"

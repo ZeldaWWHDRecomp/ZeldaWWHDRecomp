@@ -317,7 +317,50 @@ Mapping Mapping::defaults() {
 namespace {
 const int kFaceByPosition[4] = {kPadB, kPadA, kPadY, kPadX};  // by position (default)
 const int kFaceByLabel[4] = {kPadA, kPadB, kPadX, kPadY};     // by label (Xbox)
+
+// The four face bindings as the prompts show them: Wii U A/B/X/Y -> host face index 0..3, or -1
+// when the set cannot be told apart. When a virtual action takes a face button its game action
+// moves off the faces (L1, d-pad down, or off); the virtual action now holds the one free face
+// button, so the prompt keeps the face it had and the whole look stays as without the remap. Any
+// virtual action on the free face counts, not only the one that caused the remap (today Jump
+// anywhere, the moon jump and Slow walk): a Mapping keeps no history, so the current layout is the
+// evidence. The moved action's prompt then names the button that now carries it: that pre-remap picture
+// is intended (a truthful prompt would need a shoulder glyph this path cannot draw). Duplicate
+// bindings or two off-face actions have no single button to put back.
+std::array<int, 4> prompt_faces(const Mapping& m) {
+    const std::array<int, 4> none = {-1, -1, -1, -1};
+    std::array<int, 4> faces = none;
+    unsigned used = 0;
+    int missing = -1;
+    for (int i = 0; i < 4; ++i) {
+        const int b = m.pad[kA + i] - kPadA;
+        if (b < 0 || b >= 4) {
+            if (missing >= 0) return none;
+            missing = i;
+            continue;
+        }
+        if (used & (1u << b)) return none;
+        used |= 1u << b;
+        faces[i] = b;
+    }
+    if (missing < 0) return faces;
+    int free = 0;
+    while (used & (1u << free)) ++free;
+    for (int v = kFirstVirtual; v < kActionCount; ++v)
+        if (m.pad[v] == kPadA + free) {
+            faces[missing] = free;
+            return faces;
+        }
+    return none;
 }
+
+// Host face indices in the by-label order (A -> A, B -> B, X -> X, Y -> Y).
+bool by_label(const std::array<int, 4>& faces) {
+    for (int i = 0; i < 4; ++i)
+        if (faces[i] != i) return false;
+    return true;
+}
+}  // namespace
 
 FaceLayout face_layout(const Mapping& m) {
     bool pos = true, lab = true;
@@ -569,18 +612,15 @@ std::array<int, 4> hud_spots(const Mapping& m) {
 
 PromptStyle prompt_style(const Mapping& m, PadFamily family) {
     PromptStyle s;
-    const bool labels = face_layout(m) == FaceLayout::kLabels;
-    bool unambiguous = true;
-    unsigned used = 0;
-    for (int i = 0; i < 4; ++i) {
-        const int button = m.pad[kA + i] - kPadA;
-        // Non-face inputs and duplicate bindings cannot describe a four-button pad picture.
-        // Fall back as a complete set rather than mixing original and restyled icons.
-        if (button < 0 || button >= 4 || (used & (1u << button))) { unambiguous = false; break; }
-        used |= 1u << button;
-        s.buttons[i] = button;
-    }
-    if (unambiguous) {
+    // A face set the game can describe keeps its buttons: a face taken by a virtual action (Jump
+    // anywhere, the moon jump, Slow walk) is put back from the virtual action that holds it.
+    // Duplicate or non-face bindings cannot
+    // describe a four-button picture, so they keep the game's own complete icon set.
+    const std::array<int, 4> faces = prompt_faces(m);
+    const bool faces_known = faces[0] >= 0;
+    const bool labels = faces_known && by_label(faces);
+    if (faces_known) {
+        s.buttons = faces;
         switch (m.prompts) {
         case Mapping::Prompts::kAuto:
             s.face = gamecube_pad() ? FaceStyle::kGameCube : m.preset.gamecube ? FaceStyle::kOriginal : family == PadFamily::kPlayStation ? FaceStyle::kPlayStation
@@ -625,6 +665,14 @@ const char* face_colours_label(Mapping::FaceColours c) {
     case Mapping::FaceColours::kGameCube: return "GameCube";
     }
     return "Xbox";
+}
+
+FaceLayout recovered_face_layout(const Mapping& m) {
+    const std::array<int, 4> faces = prompt_faces(m);
+    if (faces[0] < 0) return face_layout(m);
+    bool pos = true;
+    for (int i = 0; i < 4; ++i) pos &= faces[i] == kFaceByPosition[i] - kPadA;
+    return by_label(faces) ? FaceLayout::kLabels : pos ? FaceLayout::kPosition : face_layout(m);
 }
 
 const char* prompts_label(Mapping::Prompts p) {

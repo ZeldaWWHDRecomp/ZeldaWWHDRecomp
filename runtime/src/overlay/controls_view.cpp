@@ -361,7 +361,8 @@ std::string binding_summary(const Mapping& m, int a) {
 void draw_controls(ControlsView& v, float w, float h) {
     const Palette P;
     const ImVec2 org = ImGui::GetCursorScreenPos();
-    const Geo g = layout(v.pro, face_layout(v.m), org, w, h);
+    const FaceLayout fl = recovered_face_layout(v.m);
+    const Geo g = layout(v.pro, fl, org, w, h);
     const float k = g.k, s = g.s;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const Mapping& m = v.m;
@@ -520,7 +521,7 @@ void draw_controls(ControlsView& v, float w, float h) {
             dl->AddCircle(p.c, p.R, ring(p.action, &wd), 0, wd);
             bool small = p.action == kHome || p.action == kPlus || p.action == kMinus;
             const auto look = prompt_style(m, pad_family());
-            const bool styled = p.action >= kA && p.action <= kY && face_layout(m) != FaceLayout::kLabels
+            const bool styled = p.action >= kA && p.action <= kY && fl != FaceLayout::kLabels
                                 && look.face != FaceStyle::kOriginal;
             const int host = styled ? look.buttons[p.action - kA] : 0;
             ImU32 ink = lit(p.action) ? P.white : P.buttonText;

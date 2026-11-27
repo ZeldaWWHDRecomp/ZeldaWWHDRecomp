@@ -14,7 +14,12 @@ controller layout, other controller layouts and custom button bindings.
 
 **Face buttons** is a separate setting. It chooses which controller buttons perform the game's
 A, B, X and Y actions. **Button prompts** chooses how those actions look on screen. You can use
-GameCube prompts with any controller or binding.
+GameCube prompts with any controller or binding. Putting **Jump anywhere**, the moon jump or
+**Slow walk** on a face button does not change the prompts: they keep the chosen style and layout,
+and the moved action's own prompt stays on that button, so it names the button that now carries
+that input. This holds while one face button carries one of them. When two game actions have left
+the faces (each of those inputs has a face button of its own, or one of them moves to another face
+button), the original icons are used.
 
 The GameCube style arranges the HUD buttons like a GameCube controller: A is large and to the
 right, B is down-left, X is to the right of A, and Y is above A. An action, its item and its word

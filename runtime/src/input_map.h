@@ -279,6 +279,12 @@ PadFamily pad_family();
 //     follows Xbox/PlayStation and detected GameCube adapters; other Nintendo/unknown pads retain
 //     original icons unless by label selects its existing Xbox fallback.
 //     By label retains its existing Xbox fallback. Original never changes face prompts.
+//     Duplicate or non-face bindings, or two actions that both left the faces, cannot describe a
+//     four-button picture and keep the game's own complete icon set.
+//     A face button taken by Jump anywhere, the moon jump or Slow walk keeps its face (the action
+//     there moved off the faces to make room), so that remap leaves the whole prompt look as it
+//     was; the moved action's prompt names the button that now carries the virtual action, which
+//     this path cannot draw truthfully.
 //   shoulders: Automatic follows the face style (Xbox: LB/RB/LT/RT, PlayStation: L1/R1/L2/R2,
 //     GameCube: L/R/Z; Original: the game's L/R/ZL/ZR; a fixed choice applies with any face layout.
 enum class FaceStyle : uint8_t { kOriginal, kXbox, kPlayStation, kGameCube, kKeyboard };
@@ -312,6 +318,11 @@ inline bool face_colours_shapes(const Mapping& m, const PromptStyle& s) {
     return s.face == FaceStyle::kPlayStation && m.face_colours == Mapping::FaceColours::kGameCube;
 }
 const char* face_colours_label(Mapping::FaceColours c);  // for the UI: "Off", "Xbox", "GameCube"
+// The face layout after putting back a face taken by a virtual action (Jump anywhere, the moon jump
+// or Slow walk; from whichever of them holds it); the bindings' own layout when no single set can be
+// put back.
+// The Controls drawings read it, so that remap does not change their letter arrangement.
+FaceLayout recovered_face_layout(const Mapping& m);
 // The game's prompts: prompt_style of the bindings the controller in use plays with (active_view)
 // and the pad family. generation() bumps when the controller in use changes, so a cached style
 // follows a switch to a controller with other bindings.
