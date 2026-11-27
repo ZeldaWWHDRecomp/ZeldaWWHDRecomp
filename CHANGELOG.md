@@ -83,6 +83,16 @@ what is on `devel` and not released yet (also in the
   crashed while translating (at `M_DragB_Stage`, reported as `QuadRenderer::draw`). A described draw now also checks
   that list against its bytes and describes the draw again when it changed. The recompiled version, and Metal, are
   unchanged (`WWHD_NATIVE_J3D_DESC_LISTCHECK=0` turns the check off).
+- **Setup's model preparation no longer stops at a sea stage resource now and then** (#686). The preparation draws
+  the models from the title screen, and about every half minute of game time the title plays its idle story intro.
+  Leaving the title releases its own copy of the sea's stage resources, and that release frees every heap the game
+  keeps for the sea's island models (the `LOD` archives). When the intro came while the preparation had one of those
+  loaded, its own release later freed them a second time and the game stopped ("indirect branch to unknown address
+  00000000" in `deletePathRes`, at a different sea archive each time); models drawn from the title's sea resources
+  at that moment could stop it as well (`sea_Stage:vr_sky.bmd`). It depended on how busy the computer was, so it
+  came and went. The preparation now finishes or puts back what it has loaded when the title starts a scene change,
+  and goes on once the title is back. Play itself is unchanged (`WWHD_DSWEEP_SCENE_GUARD=0` brings back the old
+  behaviour, for testing).
 - **Moon jump: no more softlock when Link touches lava** (#616, thanks @swinter-code). Holding the moon jump as
   Link fell into lava (in Dragon Roost Cavern, for example) skipped the burn and the return to the room's entrance:
   afterwards only the moon jump moved Link, and saving was refused because the game still thought an event was

@@ -41,6 +41,7 @@
 // (one more instance of a room model, made and drawn as daBg does; see room_test).
 // With WWHD_VK_KEY_LOG the Vulkan renderer writes the batch number next to every pipeline it creates.
 #include "dsweep.h"
+#include "dsweep_scene.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -123,6 +124,7 @@ struct Entry {
     std::string stage, arc;
     size_t order = 0;  // its place in the archive and stage lists (several processes: the order of the whole work)
     bool deferred = false;  // an object archive the game itself held when its turn came: tried again at the end
+    unsigned retries = 0;   // given up for a title scene change (dsweep_scene.h) so many times
     std::string id() const { return stage.empty() ? arc : stage + "_" + arc; }
 };
 // WWHD_DSWEEP_PART=<i>/<n>: this process does part i (0..n-1) of the work, n processes at once (setup's models step on
@@ -154,6 +156,16 @@ constexpr int kDrain = 6;   // frames between an archive's last draw and its rel
 constexpr int kLoadFrames = 900;
 constexpr unsigned kRelease = 4;  // frames between a stage resource's release and the next request
 std::string g_released;           // the stage resource released last: the next request waits until it is gone
+// the title's scene changes (dsweep_scene.h, #686); WWHD_DSWEEP_SCENE_GUARD=0: archives are held across them (before)
+SceneGuard g_scene;
+bool scene_guard_on() {
+    static const bool on = [] {
+        const char* e = std::getenv("WWHD_DSWEEP_SCENE_GUARD");
+        return !(e && !std::strcmp(e, "0"));
+    }();
+    return on;
+}
+constexpr unsigned kSceneRetries = 3;  // an archive given up this often goes on through the next scene change
 
 struct State {
     Phase phase = Phase::Start;
@@ -168,6 +180,7 @@ struct State {
     Entry entry;                     // ... as queued
     bool requested = false;          // a stage resource: its load is requested
     bool owned = false;              // ... loaded by the sweep (released after it)
+    bool retry = false;              // ... given up for a scene change: released, then queued again
     std::set<std::string> resident, skip, done;
     unsigned swept = 0, failed = 0, archives = 0, load_failed = 0;
     size_t listed = 0;               // archives in WWHD_DSWEEP_ARCHIVES and WWHD_DSWEEP_STAGES (progress total)
@@ -1339,8 +1352,81 @@ void actor_group_step(Cpu* c) {
     g_group.clear();
 }
 
+// debug (WWHD_DSWEEP_DEBUG): once per sweep step, the path pool's stage resources as they come and go (whoever
+// loads or releases them) and the heaps of each (info +0xC0 parent, +0xC4 data): one whose vtable (+0xC) is no
+// game vtable or whose destroy slot (+0x24) is null (a destructor ran: someone else destroyed it) is logged once
+void check_pool() {
+    static const bool on = std::getenv("WWHD_DSWEEP_DEBUG") != nullptr;
+    if (!on) return;
+    static std::map<std::string, uint32_t> last;
+    static std::set<uint32_t> bad;
+    std::map<std::string, uint32_t> now;
+    const uint64_t step = interp::executed_steps();
+    for (uint32_t info : path_infos()) now[path_id(info)] = info;
+    for (const auto& [id, info] : now)
+        if (!last.count(id) || last[id] != info)
+            LOG("[dsweep] pool step %llu (%s): + %s info %08X", (unsigned long long)step, g.archive.c_str(),
+                id.c_str(), info);
+    for (const auto& [id, info] : last)
+        if (!now.count(id))
+            LOG("[dsweep] pool step %llu (%s): - %s info %08X", (unsigned long long)step, g.archive.c_str(),
+                id.c_str(), info);
+    last.swap(now);
+    for (const auto& [id, info] : last)
+        for (uint32_t off : {0xC0u, 0xC4u}) {
+            const uint32_t h = ld32(info + off);
+            if (!mem2(h, 0x40)) continue;
+            const uint32_t vt = ld32(h + 0xC), destroy = mem2(vt, 0x28) ? ld32(vt + 0x24) : 0;
+            if (vt >= 0x10000000u && vt < 0x10200000u && destroy) {
+                bad.erase(h);
+                continue;
+            }
+            if (bad.insert(h).second)
+                LOG("[dsweep] pool step %llu (%s): %s's %s heap %08X destroyed (vtable %08X, destroy %08X)",
+                    (unsigned long long)step, g.archive.c_str(), id.c_str(), off == 0xC0 ? "parent" : "data", h, vt,
+                    destroy);
+        }
+}
+// A title scene change under way (dsweep_scene.h): no new archive, and the current one is given up: a stage resource
+// not requested yet goes back to the queue; one being swept goes to Draining, which releases it as usual and queues
+// it again (a load in progress completes first: it then goes the same way). True: this step does nothing else.
+bool scene_hold(uint64_t now) {
+    if (!scene_guard_on() || !config().title || !g_scene.hold(now)) return false;
+    static uint64_t said = ~0ull;
+    const auto note = [&](const char* what, bool archive) {
+        if (said != g_scene.end_step + g_scene.pending)
+            LOG("[dsweep] the title's scene changes (step %llu): %s%s", (unsigned long long)now, what,
+                archive ? (" " + g.archive).c_str() : "");
+        said = g_scene.end_step + g_scene.pending;
+    };
+    switch (g.phase) {
+    case Phase::NextArchive:
+        note("no new archive until it is back", false);
+        return true;
+    case Phase::StageLoading:
+        if (g.requested || g.entry.retries >= kSceneRetries) return false;
+        note("not requested yet, again after it:", true);
+        g.queue.push_back(g.entry);
+        g.archive.clear();
+        g.phase = Phase::NextArchive;
+        return true;
+    case Phase::Sweeping:
+        if (g.entry.retries >= kSceneRetries || g.archive.empty()) return false;
+        note("its models dropped and the archive released (if the sweep loaded it), again after it:", true);
+        g.retry = true;
+        g.phase = Phase::Draining;
+        g.frames = 0;
+        g_tag = 0;
+        pipeline_groups::set_sweeping(0);
+        return true;
+    default:
+        return false;
+    }
+}
 void step(Cpu* c, uint32_t host) {
+    check_pool();
     flush_done(false);
+    if (scene_hold(interp::executed_steps())) return;
     const uint32_t name = g.scratch + 0x780, phase = g.scratch + 0x7F0;
     switch (g.phase) {
     case Phase::Start:
@@ -1521,10 +1607,17 @@ void step(Cpu* c, uint32_t host) {
                 call(c, GC(0x0260E8A8), {ld32(GD(0x101F4F54)), ss, ss + 8});
                 g_released = g.archive;
             }
-            progress("archive-done " + g.archive);
-            g.done.insert(g.archive);
-            report_archives(g.archive);
+            if (g.retry) {  // given up for a scene change: next again, once the title is back
+                ++g.entry.retries;
+                g.queue.push_back(g.entry);
+                progress("retry " + g.archive);
+            } else {
+                progress("archive-done " + g.archive);
+                g.done.insert(g.archive);
+                report_archives(g.archive);
+            }
         }
+        g.retry = false;
         g.phase = Phase::NextArchive;
         return;
     case Phase::Environment:
@@ -1951,6 +2044,8 @@ void after_actor_draw(Cpu* c, uint32_t actor) {
     static uint64_t last = ~0ull;
     if (now == last) return;
     last = now;
+    // the title's scene changes (dsweep_scene.h): its fade's overlap request (fopOvlpM, l_fopOvlpM_overlap)
+    if (cfg.title) g_scene.update(now, ld32(GD(0x101F36CC)) != 0);
     // only in a settled stage (the title "sea_T" or a game stage, the same one for kSettle steps): the stage's light
     // and environment state, which the models' light setup reads, is ready then; the sweep pauses while a stage
     // changes (it never changes during a setup sweep from the title)
