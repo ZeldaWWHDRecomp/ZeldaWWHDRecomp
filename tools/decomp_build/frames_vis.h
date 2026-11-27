@@ -1,8 +1,11 @@
-/* Pre-included into every decompiled game unit (CMakeLists.txt, WWHD_DECOMP): gabi.h's weak null
- * gmem_frame_info would otherwise be hidden and, after `ld -r`, local to each unit; with default
- * visibility it stays a global weak symbol that the runtime's definition (runtime/src/decomp/frames.cpp)
- * overrides. */
+/* Pre-included into every decompiled game unit (CMakeLists.txt, WWHD_DECOMP). gmem_frame_info is defined once, by the
+ * runtime (runtime/src/decomp/frames.cpp): GABI_FRAME_INFO_EXTERN keeps gabi.h from defining its weak null default in
+ * every unit (on Windows each unit's weak definition also defined `.weak.gmem_frame_info.default.<suffix>` with the same
+ * suffix in every unit: ld.lld "duplicate symbol", #678). The declaration keeps default visibility: with a
+ * decompilation from before GABI_FRAME_INFO_EXTERN the weak default would otherwise be hidden and, after `ld -r`, local
+ * to each unit; with default visibility it stays a global weak symbol that the runtime's definition overrides. */
 #pragma once
+#define GABI_FRAME_INFO_EXTERN 1
 #include <cstdint>
 #include "native_frames.h"
 extern "C" __attribute__((visibility("default"))) const GabiFrameInfo* gmem_frame_info(uint32_t addr);

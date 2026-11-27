@@ -128,6 +128,13 @@ what is on `devel` and not released yet (also in the
   buttons (the bow, the bombs, the hookshot), so the item could hardly be seen. They are drawn behind their item
   again, as the original plates and the Xbox and PlayStation looks do; with an empty slot the button looks as
   before. A, B and the R plate are unchanged, at every aspect ratio.
+- **Windows: the decomp version builds again** (#678, thanks @radialmonster). Two of the steps where setup's
+  "Also build the decomp version" stopped on Windows are fixed. One file of the decompilation (`d/d_snap.cpp`) used
+  `std::pair` without including `<utility>`, which llvm-mingw's C++ library does not include on its own; the
+  decompilation now includes it (ZeldaWWHDDecomp/wwhd#4). And the final link failed with 29 "duplicate symbol"
+  errors for `.weak.gmem_frame_info.default..refptr.g_decomp_call_tab`: every game unit had its own weak copy of
+  `gmem_frame_info`, and on Windows each copy also defines a helper symbol with the same name in every unit. The
+  units now only refer to it, and the runtime defines it once. macOS, Linux and Android build as before.
 
 ### Build and testing
 
