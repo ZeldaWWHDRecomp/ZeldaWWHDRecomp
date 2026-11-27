@@ -80,6 +80,13 @@ what is on `devel` and not released yet (also in the
 
 ### Fixed
 
+- **Setup's model preparation no longer fails now and then before it starts** (#690). The preparation draws the
+  models from the title screen and presses A to get past the notice screen at start. If one of those presses came
+  just as the title appeared, the title took it as "start the game" and opened the file select ("Name"); the
+  preparation never began, setup waited five minutes, found nothing to skip and gave up on the models. The presses
+  now stop as soon as the game heads for the title. If the title still leaves for the file select, the attempt ends
+  at once and setup starts it again (up to three times in a row) instead of failing; later in the preparation it
+  goes on where it was, with nothing skipped. Play itself is unchanged.
 - **Mouse camera: first person and aiming now turn exactly as far as the camera on foot.** With the same Mouse
   sensitivity, first person and the item aims could turn noticeably less than the camera on foot. Mouse movement
   that arrived while the game read the controller a second time in a logic step was thrown away in first person.

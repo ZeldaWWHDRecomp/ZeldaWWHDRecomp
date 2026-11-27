@@ -61,6 +61,7 @@
 #include "guest_addr.h"
 #include "mods/guest_heap_query.h"
 #include "pipeline_groups.h"
+#include "dsweep_title.h"
 
 
 namespace dsweep {
@@ -1684,11 +1685,39 @@ uint32_t pad_buttons(uint64_t frame) {
     // a title sweep: the boot's notice screen waits for A; pulse it until the title stage is up. Later the idle title
     // plays its story intro (no actor draws, so the sweep pauses): A there returns to the title. Never while the title
     // itself is up (A there opens the file select).
-    if (!config().title || g_finished || frame % 60 >= 6) return 0;
+    if (!config().title || g_finished) return 0;
+    if (!g_title_seen.load(std::memory_order_relaxed) && !g_file_select.load(std::memory_order_relaxed)) {
+        // the way to the title (dsweep_title.h, #690): A until the stage is the title's, never on the title itself
+        // (its intro takes A as "enter the game" and opens the file select). WWHD_DSWEEP_TITLE_GATE=0: A until the
+        // title's first actor draw (the old code); WWHD_DSWEEP_BOOT_A=<period>[,<width>] (testing): another pulse
+        static const dsweep_title::BootPulse pulse = [] {
+            dsweep_title::BootPulse p;
+            if (const char* g = std::getenv("WWHD_DSWEEP_TITLE_GATE")) p.gate = std::strcmp(g, "0") != 0;
+            if (const char* a = std::getenv("WWHD_DSWEEP_BOOT_A")) {
+                unsigned period = 0, width = 0;
+                const int n = std::sscanf(a, "%u,%u", &period, &width);
+                if (n >= 1 && period) p.period = period, p.width = n >= 2 && width ? width : std::max(1u, period / 2);
+            }
+            return p;
+        }();
+        const std::string stage = stage_name();
+        const bool a = dsweep_title::boot_a(pulse, frame, stage, false);
+        static bool was = false;
+        static std::string logged;
+        if (a && !was)
+            LOG("[dsweep] A on the way to the title: frame %llu step %llu stage \"%s\"", (unsigned long long)frame,
+                (unsigned long long)interp::executed_steps(), stage.c_str());
+        if (stage == "sea_T" && logged != stage)
+            LOG("[dsweep] the title's stage from frame %llu step %llu: %s", (unsigned long long)frame,
+                (unsigned long long)interp::executed_steps(),
+                pulse.gate ? "no more A" : "A until its first actor draw (gate off)");
+        logged = stage, was = a;
+        return a ? 0x8000u : 0u;
+    }
+    if (frame % 60 >= 6) return 0;
     // the file select at the end: A on the title until it is up, then nothing
     if (g_file_select.load(std::memory_order_relaxed)) return g_in_file_select.load(std::memory_order_relaxed) ? 0 : 0x8000u;
     if (g_visiting.load(std::memory_order_relaxed)) return 0;
-    if (!g_title_seen.load(std::memory_order_relaxed)) return frame >= 120 ? 0x8000u : 0u;
     // (no actor draw for 90 logic steps. Not by time: uncapped, a record-only sweep plays the whole intro in about two
     // seconds, and a frame waiting two seconds for its pipelines on a busy machine is no intro; either way A came
     // on the title and opened the file select, where the attempt stalled)
@@ -1965,6 +1994,18 @@ void after_actor_draw(Cpu* c, uint32_t actor) {
     }
     if (g.phase == Phase::FileSelect) return file_select_step(current);
     if (g.phase == Phase::Visits) return g_visit_cpu = c, visit_step(current);
+    // the file select came up without the sweep asking (dsweep_title.h, #690): this attempt cannot go on there
+    const dsweep_title::Lost lost = dsweep_title::title_lost(
+        g_title_seen, current, g.phase == Phase::Actors || g.phase == Phase::Done, g.phase != Phase::Start);
+    if (cfg.title && lost != dsweep_title::Lost::None && !g_abort) {
+        if (lost == dsweep_title::Lost::Restart) flush_done(true), progress("restart");
+        LOG("[dsweep] the title opened the file select at step %llu %s", (unsigned long long)now,
+            lost == dsweep_title::Lost::Restart ? "during the sweep: restarting (nothing skipped)"
+                                                : "before the sweep began: ending this attempt (setup starts it again)");
+        g_abort = true;
+        g.phase = Phase::Done;
+        return;
+    }
     if (g.phase == Phase::Actors && cfg.title && !current.empty() && current != "sea_T" && !g_abort) {
         LOG("[dsweep] actor %s changed the stage to %s: ending this attempt", g.spawn.id().c_str(), current.c_str());
         g_abort = true;  // the supervisor skips it (the last "actor" line) and resumes
