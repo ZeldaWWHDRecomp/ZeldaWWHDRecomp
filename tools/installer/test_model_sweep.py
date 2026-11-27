@@ -40,6 +40,10 @@ class FakeGame:
         archives = [l for l in Path(env['WWHD_DSWEEP_ARCHIVES']).read_text().splitlines() if l]
         action = self.script.pop(0)
         progress = state / 'progress.txt'
+        if action in ('title-lost', 'title-lost-stall'):
+            # #690: the title went to the file select before the sweep began: no progress line; the game ends the
+            # attempt (or, before the fix, stays there until setup's start-up time runs out)
+            return Proc(0 if action == 'title-lost' else None)
         done = {l[13:] for l in progress.read_text().splitlines() if l.startswith('archive-done ')} if progress.exists() else set()
         skip = set((state / 'skip.txt').read_text().splitlines()) if (state / 'skip.txt').exists() else set()
         with progress.open('a') as out:
@@ -50,6 +54,9 @@ class FakeGame:
                 out.write('load %s\nmodel %s:a.bdl\n' % (name, name))
                 if action == ('crash', name):
                     return Proc(139)
+                if action == ('restart', name):  # the title went to the file select during the sweep (#690)
+                    out.write('restart\n')
+                    return Proc(0)
                 if action == 'cancel' and len(done) == 1:
                     self.test.cancelled = True
                     return Proc(None)
@@ -98,9 +105,9 @@ class ModelSweepTests(unittest.TestCase):
         self.lines = []
 
     def run_sweep(self, game, identity=None, **kwargs):
+        kwargs.setdefault('sleep', lambda s: None)
         return model_sweep.run('/synthetic/exe', self.game, self.cache, 'vulkan', identity or {'game': 'g', 'preparation': 'p'},
-                               {'WWHD_SHADER_CACHE': 'live/shaders.bin'}, line=self.lines.append, popen=game,
-                               sleep=lambda s: None, **kwargs)
+                               {'WWHD_SHADER_CACHE': 'live/shaders.bin'}, line=self.lines.append, popen=game, **kwargs)
 
     def test_archive_names_come_from_the_players_files_without_rooms_or_layouts(self):
         self.assertEqual(model_sweep.object_archives(self.game), ['Always', 'Bk', 'Kn', 'Link'])
@@ -161,6 +168,51 @@ class ModelSweepTests(unittest.TestCase):
         self.assertEqual(model_sweep.culprit(lines, set()), 'Saku:1:0:0')
         self.assertIsNone(model_sweep.culprit(lines, {'Saku:1:0:0'}))
         self.assertEqual(model_sweep.culprit(lines[:3], set()), 'Bk:a.bdl')
+
+    def test_an_attempt_whose_sweep_never_began_starts_again(self):
+        # #690: the title opened the file select before the sweep began: no progress line, nothing to skip
+        game = FakeGame(self, ['title-lost', 'title-lost', 'ok'])
+        log = []
+        self.assertEqual(self.run_sweep(game, log=log.append), 'done')
+        self.assertEqual(len(game.calls), 3)
+        state = model_sweep.state_dir(self.cache, 'vulkan')
+        self.assertFalse((state / 'skip.txt').exists())
+        self.assertIn('Model preparation attempt 1 stopped (exit 0) before the sweep began; starting again', log)
+        # a stalled start-up the same (setup's start-up time, then started again)
+        now = [0.0]
+        def sleep(seconds):
+            now[0] += 10
+        model_sweep.clear(self.cache)
+        game = FakeGame(self, ['title-lost-stall', 'ok'])
+        self.assertEqual(self.run_sweep(game, clock=lambda: now[0], sleep=sleep), 'done')
+        self.assertEqual(len(game.calls), 2)
+        self.assertGreaterEqual(now[0], model_sweep.STARTUP_SECONDS)
+
+    def test_a_sweep_that_never_begins_gives_up_after_a_few_attempts(self):
+        game = FakeGame(self, ['title-lost'] * model_sweep.MAX_NOT_STARTED + ['ok'])
+        log = []
+        self.assertEqual(self.run_sweep(game, log=log.append), 'failed')
+        self.assertEqual(len(game.calls), model_sweep.MAX_NOT_STARTED)
+        self.assertTrue(log[-1].endswith('before the sweep began; giving up'))
+        # an attempt that began in between counts the attempts that never began from zero again
+        model_sweep.clear(self.cache)
+        game = FakeGame(self, ['title-lost', 'title-lost', ('crash', 'Kn'), 'title-lost', 'title-lost', 'ok'])
+        self.assertEqual(self.run_sweep(game), 'done')
+        self.assertEqual(len(game.calls), 6)
+
+    def test_a_restart_during_the_sweep_skips_nothing_and_resumes(self):
+        game = FakeGame(self, [('restart', 'Kn'), 'ok'])
+        self.assertEqual(self.run_sweep(game), 'done')
+        state = model_sweep.state_dir(self.cache, 'vulkan')
+        self.assertFalse((state / 'skip.txt').exists())
+        progress = (state / 'progress.txt').read_text().splitlines()
+        self.assertEqual(progress.count('archive-done Always'), 1)
+        self.assertEqual(progress.count('archive-done Kn'), 1)
+        # one that keeps coming without finishing anything ends like a repeating crash
+        model_sweep.clear(self.cache)
+        game = FakeGame(self, [('restart', 'Always')] * 3)
+        self.assertEqual(self.run_sweep(game, attempts=3), 'failed')
+        self.assertEqual(len(game.calls), 3)
 
     def test_a_repeating_crash_gives_up(self):
         game = FakeGame(self, [('crash', 'Kn')] * 3)

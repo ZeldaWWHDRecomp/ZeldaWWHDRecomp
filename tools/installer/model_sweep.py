@@ -33,6 +33,7 @@ ISLAND_STAGES = ('sea',)
 MODELS_PER_BATCH = max(1, min(8, int(os.environ.get('WWHD_SETUP_MODEL_SWEEP_BATCH', '1') or 1)))
 STARTUP_SECONDS = 300     # until an attempt's first progress line (the game starting up)
 MAX_PROCESSES = 4          # game processes of the models step at once on a desktop (user decision 2026-10-23)
+MAX_NOT_STARTED = 3        # attempts in a row whose sweep never began (no progress line): started again, then failed
 STALL_SECONDS = 60         # no new line in progress.txt for this long: the attempt counts as a crash (a model, room or
                            # actor takes well under a second; a stuck game writes nothing more)
 
@@ -240,6 +241,7 @@ def _attempts(executable, game, state, renderer, cache_env, archives, stages, vi
     def finished():
         return sum(1 for l in _lines(progress_file) if l.startswith(('archive-done ', 'actor-done ')))
     without_progress, before = 0, finished()
+    not_started = 0  # attempts in a row that wrote no progress line
     for attempt in range(1, MAX_ATTEMPTS_TOTAL + 1):
         if without_progress >= attempts:
             break
@@ -260,6 +262,10 @@ def _attempts(executable, game, state, renderer, cache_env, archives, stages, vi
                 # scene layer (measured on 19 places: no gain over the first rooms, 22 more minutes)
                 env['WWHD_DSWEEP_VISIT'] = 'all' if os.environ.get('WWHD_SETUP_MODEL_SWEEP_VISITS') == 'all' else str(visits)
             (scratch / 'save').mkdir()
+            try:
+                size_before = progress_file.stat().st_size  # (an attempt that writes nothing never began)
+            except OSError:
+                size_before = -1
             output_path = scratch / 'output.log'
             output = stack.enter_context(output_path.open('wb'))
             reader = stack.enter_context(output_path.open('rb'))
@@ -312,7 +318,27 @@ def _attempts(executable, game, state, renderer, cache_env, archives, stages, vi
         done_lines = _lines(progress_file)
         if 'sweep-done' in done_lines:
             return 'done'
+        try:
+            began = progress_file.stat().st_size != size_before
+        except OSError:
+            began = False
+        if not began:
+            # the sweep never began (#690: the title went to the file select before it, and the game ended the
+            # attempt or stalled there): nothing of this attempt to skip; start it again, a few times
+            not_started += 1
+            log('Model preparation attempt %d stopped (%s) before the sweep began; %s' % (
+                attempt, 'stalled' if stalled else 'exit %s' % child.returncode,
+                'starting again' if not_started < MAX_NOT_STARTED else 'giving up'))
+            if not_started >= MAX_NOT_STARTED:
+                return 'failed'
+            continue
+        not_started = 0
         if done_lines and done_lines[-1] == 'restart':  # an orderly restart the sweep asked for (not a stop)
+            # (#690: also when the title went to the file select during the sweep; restarts that finish nothing
+            # count towards the attempts without progress, so one that keeps coming ends)
+            now = finished()
+            without_progress = 0 if now > before else without_progress + 1
+            before = now
             continue
         group = stopped_group(done_lines)
         if group:

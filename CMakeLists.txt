@@ -2724,6 +2724,12 @@ if(Python3_Interpreter_FOUND AND NOT ANDROID)
     CodeModsBuild.test_setup_install_publishes_choice_settings_and_variant)
 endif()
 
+# Setup's model preparation (tools/installer/model_sweep.py): its attempt loop with a synthetic game process.
+if(Python3_Interpreter_FOUND AND NOT ANDROID)
+  add_test(NAME setup_model_sweep COMMAND "${Python3_EXECUTABLE}" -m unittest test_model_sweep
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/tools/installer")
+endif()
+
 # Synthetic surround checks run without opening any host audio device or using game assets.
 foreach(test audio_producer surround_output)
   add_executable(${test}_test runtime/tools/${test}_test.cpp runtime/src/audio_out.cpp runtime/src/game_clock.cpp)
@@ -3202,6 +3208,10 @@ add_executable(pane_name_filter_test runtime/tools/pane_name_filter_test.cpp)
 target_include_directories(pane_name_filter_test PRIVATE runtime/src)
 target_compile_options(pane_name_filter_test PRIVATE -UNDEBUG)
 add_test(NAME pane_name_filter COMMAND pane_name_filter_test ${CMAKE_SOURCE_DIR}/runtime/src)
+add_executable(dsweep_title_test runtime/tools/dsweep_title_test.cpp)
+target_include_directories(dsweep_title_test PRIVATE runtime/src)
+target_compile_options(dsweep_title_test PRIVATE -UNDEBUG)
+add_test(NAME dsweep_title COMMAND dsweep_title_test)
 if(UNIX)
   add_executable(story_demo_light_test runtime/tools/story_demo_light_test.cpp runtime/src/mods/story_demo_light.cpp runtime/src/guest_addr_identity.c)
   target_include_directories(story_demo_light_test PRIVATE runtime/src runtime/src/mods runtime/include)
