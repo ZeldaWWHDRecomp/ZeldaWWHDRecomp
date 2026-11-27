@@ -29,6 +29,9 @@ float mouse_first_person_scale() { return mouseFirstPerson; }
 bool stickPitch = false;
 bool camera_stick_pitch() { return stickPitch; }
 void set_camera_stick_pitch(bool look) { stickPitch = look; }
+int zoomHold = 1;
+int camera_zoom_hold() { return zoomHold; }
+void set_camera_zoom_hold(int choice) { zoomHold = choice; }
 bool aimLeft = false;
 bool aim_left_stick() { return aimLeft; }
 void set_aim_left_stick(bool left) { aimLeft = left; }
@@ -224,6 +227,18 @@ int main() {
         assert(mods::stickPitch);
         mods::stickPitch=false;[g_controls syncOptions];
         assert(g_controls.stickPitch.indexOfSelectedItem==0);
+        // #688: Zoom while holding, L by default, only active with Look up and down
+        assert(g_controls.zoomHold.indexOfSelectedItem==1 && !g_controls.zoomHold.enabled);
+        assert(g_controls.zoomHold.numberOfItems==3 && [[g_controls.zoomHold itemTitleAtIndex:2] isEqualToString:@"ZL (targeting)"]);
+        [g_controls.stickPitch selectItemAtIndex:1];[g_controls stickPitchChanged:g_controls.stickPitch];
+        assert(g_controls.zoomHold.enabled);
+        [g_controls.zoomHold selectItemAtIndex:2];[g_controls zoomHoldChanged:g_controls.zoomHold];
+        assert(mods::zoomHold==2);
+        mods::zoomHold=0;[g_controls syncOptions];
+        assert(g_controls.zoomHold.indexOfSelectedItem==0 && g_controls.zoomHold.enabled);
+        [g_controls.stickPitch selectItemAtIndex:0];[g_controls stickPitchChanged:g_controls.stickPitch];
+        assert(!mods::stickPitch && !g_controls.zoomHold.enabled);
+        mods::zoomHold=1;
         // #666: First-person aiming, Right stick (HD) by default
         assert(g_controls.aimStick.indexOfSelectedItem==0&&g_controls.aimStick.numberOfItems==2);
         [g_controls.aimStick selectItemAtIndex:1];[g_controls aimStickChanged:g_controls.aimStick];

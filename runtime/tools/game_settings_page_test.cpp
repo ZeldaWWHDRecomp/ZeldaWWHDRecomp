@@ -389,6 +389,11 @@ int main() {
         for (const char* w : {"Right stick up/down", "Zoom (original)", "Look up and down",
                               "Zoom: closer and lower, as in the game. Look: the camera tilts up and down at the same distance."})
             for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
+        // #688: Zoom while holding (with Look up and down)
+        for (const char* w : {"Zoom while holding", "ZL (targeting)",
+                              "Look up and down: while this button is held, the right stick zooms as in the game. A tap of L still turns the GamePad page."})
+            for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
+        assert(game_settings_text::tr("Zoom while holding", 3) == "Zoom beim Halten");
         // #666: the Camera tab's First-person aiming choice
         for (const char* w : {"First-person aiming", "Right stick (HD)", "Left stick (classic)",
                               "The stick that aims in first person. Left: as on the GameCube; the right stick then moves and zooms."})

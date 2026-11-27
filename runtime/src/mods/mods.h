@@ -260,6 +260,10 @@ bool pinch_fov_on();               // Android: a pinch changes the field of view
 void set_pinch_fov_on(bool on);
 bool camera_stick_pitch();         // Right stick up/down: false Zoom (original, default), true Look up and down (#661)
 void set_camera_stick_pitch(bool look);
+int camera_zoom_hold();            // Zoom while holding (#688): camera_zoom_hold::Choice (Off, L default, ZL)
+void set_camera_zoom_hold(int choice);
+bool camera_zoom_held();           // the zoom button is held now (Look up and down): the stick zooms (controller_play.cpp)
+void camera_zoom_used();           // camera.cpp: the camera zoomed through it (no page turn on L's release)
 bool aim_left_stick();             // First-person aiming: false Right stick (HD, default), true Left stick (classic) (#666)
 void set_aim_left_stick(bool left);
 float steer_swing_degrees(bool player_camera);  // camera.cpp, once per logic step

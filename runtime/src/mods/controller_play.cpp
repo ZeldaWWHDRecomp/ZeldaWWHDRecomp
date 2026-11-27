@@ -4,12 +4,17 @@
 //   - pad_play_rules: L and d-pad down by the game's state (input_map::play_buttons): in play an
 //     input that jumps (Jump anywhere or the moon jump on) presses no L unless "L turns the GamePad
 //     page" is on, and an input shared by a game button and L or d-pad down presses only one of them;
+//   - Zoom while holding (issue #688, camera_zoom_hold.h): with Look up and down, whether the zoom button is held
+//     (camera.cpp asks camera_zoom_held), and on L its press held back in play until it is let go (a tap turns
+//     the GamePad page then, a zoom does not);
 //   - the on-screen Jump and Moon jump buttons (context_buttons.h jump_buttons): which show, and
 //     their presses (input::set_touch_virtual), for android/.../TouchControls.java.
 // Both read the PlayContext (play_context.h), which this file therefore always wants.
+#include <atomic>
 #include <cstdlib>
 #include <mutex>
 
+#include "camera_zoom_hold.h"
 #include "context_buttons.h"
 #include "mods.h"
 #include "play_context.h"
@@ -27,7 +32,11 @@ void want_context() {
     static const bool wanted = (play_context_want(true), true);
     (void)wanted;
 }
+std::atomic<bool> g_zoom_held{false}, g_zoom_used{false};
 }  // namespace
+
+bool camera_zoom_held() { return g_zoom_held.load(std::memory_order_relaxed); }
+void camera_zoom_used() { g_zoom_used.store(true, std::memory_order_relaxed); }
 
 void pad_play_rules(input::PadState& p) {
     want_context();
@@ -46,6 +55,17 @@ void pad_play_rules(input::PadState& p) {
     const uint32_t acting = (jump_anywhere() ? p.virt & input::kVirtJump : 0) |
                             (infinite(kMoonJump) ? p.virt & input::kVirtMoonJump : 0) | (p.virt & input::kVirtSlowWalk);
     p.buttons = input_map::play_buttons(m, p.buttons, in_play, acting);
+    // Zoom while holding (issue #688): the VPAD and KPAD reads see the same host input in a step, so one state
+    {
+        static camera_zoom_hold::State zoom;
+        const bool look = camera_stick_pitch();
+        const bool was = zoom.held;
+        p.buttons = camera_zoom_hold::filter(zoom, camera_zoom_hold(), look, in_play, before, p.buttons, p.ry,
+                                             g_zoom_used.exchange(false, std::memory_order_relaxed), step());
+        g_zoom_held.store(zoom.held, std::memory_order_relaxed);
+        if (zoom.held != was && trace_on()) trace("zoom hold: %s", zoom.held ? "held (the stick zooms)" : "let go");
+        if (trace_on() && (p.buttons & ~before & input::kL)) trace("zoom hold: L tap to the game (no zoom while held)");
+    }
     // debug: WWHD_PLAY_RULES_LOG=1 logs each change of what the rules hold back
     static const bool log = getenv("WWHD_PLAY_RULES_LOG") != nullptr;
     static uint32_t last = 0;

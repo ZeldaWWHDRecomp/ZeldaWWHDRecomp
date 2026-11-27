@@ -20,6 +20,14 @@ what is on `devel` and not released yet (also in the
 
 ### New
 
+- **Look up and down: zoom while holding L** (#688, thanks @stonerbong42069). With **Right stick up/down: Look up
+  and down**, holding a button switches the right stick back to the original zoom while it is held: **Zoom while
+  holding** in **Settings › Controls › Camera**, right under it. *L* (L1 / LB, Q on the keyboard: the Wii U's L
+  as bound in Controls) is the default; the game uses L in play only to turn the GamePad screen between Items and
+  Map, which a short tap of L still does (when you let go), and holding it neither targets nor changes the camera.
+  *ZL (targeting)* zooms while Link targets instead (targeting itself is unchanged), and *Off* always looks up and
+  down. The mouse camera's up/down zooms too while the button is held. Also on the item menu's settings page and in
+  the macOS Controls window; saved (`WWHD_CAM_ZOOM_HOLD=0/1/2` for a run).
 - **Mouse camera: First-person sensitivity** (Settings › Controls › Camera, under Mouse sensitivity). It multiplies
   the mouse sensitivity in first person and while aiming only (R3 look, bow, hookshot, boomerang, grappling hook,
   telescope, Picto Box): 0.25x to 4x, 1.00x by default, so looking around on foot and aiming can turn at different
