@@ -186,6 +186,9 @@ what is on `devel` and not released yet (also in the
   errors for `.weak.gmem_frame_info.default..refptr.g_decomp_call_tab`: every game unit had its own weak copy of
   `gmem_frame_info`, and on Windows each copy also defines a helper symbol with the same name in every unit. The
   units now only refer to it, and the runtime defines it once. macOS, Linux and Android build as before.
+  One more file stopped it: the decompilation's `c_lib_callsig_t60.h` (true 60's call-site log) included
+  `<dlfcn.h>`, which Windows doesn't have, for one offset in a log line; on Windows it now takes the offset from the
+  exe's image base (radialmonster's fix).
 
 ### Build and testing
 
