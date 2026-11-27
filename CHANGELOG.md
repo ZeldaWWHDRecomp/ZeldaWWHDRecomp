@@ -7,6 +7,20 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+## v0.5.3
+
+A fix release for setup on Windows; the game itself is unchanged from v0.5.2.
+
+### Fixed
+
+- **Windows: setup no longer stops with "The game folder ...data\bin is in use" after linking** (#674, #672, thanks
+  @Killjoy7530 and @jhsousa3838-dotcom). Setup links the new game into `data\bin.staging`, starts it once to check
+  it, and then renames the folder to `data\bin`. Right after that check run, Windows (usually Windows Defender
+  scanning the new program) can keep the game open for a few seconds, so the rename failed with "Access is denied"
+  although nothing was running, both on a fresh install and on an update. Setup now waits and tries again for up to
+  about half a minute; if the folder is still locked, the message also suggests excluding the game folder from the
+  antivirus for a moment. Your game before the update stays unchanged either way.
+
 ## v0.5.2
 
 ### Thanks

@@ -3040,5 +3040,69 @@ class ScriptsAreAscii(unittest.TestCase):
         self.assertEqual(names, [])
 
 
+class PublishBuildRetry(unittest.TestCase):
+    """Issues #672, #674: right after the check run, Windows can keep the new game open for a moment, so the
+    bin.staging -> bin rename is denied although nothing runs; setup waits and tries again."""
+
+    def _staged(self, d, with_previous_bin=False):
+        data = os.path.join(d, "data")
+        staging = os.path.join(data, setup.STAGING_DIR)
+        os.makedirs(staging)
+        with open(os.path.join(staging, setup.STAGING_MARK), "w") as f:
+            json.dump({"state": "verified"}, f)
+        with open(os.path.join(staging, "game.exe"), "w") as f:
+            f.write("new")
+        exe_dir = os.path.join(data, "bin")
+        if with_previous_bin:
+            os.makedirs(exe_dir)
+            with open(os.path.join(exe_dir, "game.exe"), "w") as f:
+                f.write("old")
+        return data, staging, exe_dir
+
+    def _flaky_replace(self, failures):
+        real = os.replace
+        left = {"n": failures}
+
+        def replace(src, dst):
+            if left["n"] > 0:
+                left["n"] -= 1
+                raise PermissionError(5, "Access is denied", src)
+            return real(src, dst)
+        return replace
+
+    def test_a_briefly_locked_staging_folder_is_published_after_retrying(self):
+        with tempfile.TemporaryDirectory() as d:
+            data, staging, exe_dir = self._staged(d)
+            with mock.patch.object(setup.os, "replace", side_effect=self._flaky_replace(3)), \
+                    mock.patch.object(setup.time, "sleep") as sleep:
+                setup.publish_build(staging, exe_dir, data)
+            self.assertFalse(os.path.exists(staging))
+            with open(os.path.join(exe_dir, "game.exe")) as f:
+                self.assertEqual(f.read(), "new")
+            self.assertEqual(sleep.call_count, 3)
+
+    def test_an_update_keeps_the_previous_game_after_retrying(self):
+        with tempfile.TemporaryDirectory() as d:
+            data, staging, exe_dir = self._staged(d, with_previous_bin=True)
+            with mock.patch.object(setup.os, "replace", side_effect=self._flaky_replace(2)), \
+                    mock.patch.object(setup.time, "sleep"):
+                setup.publish_build(staging, exe_dir, data)
+            with open(os.path.join(exe_dir, "game.exe")) as f:
+                self.assertEqual(f.read(), "new")
+            with open(os.path.join(data, setup.PREVIOUS_DIR, "game.exe")) as f:
+                self.assertEqual(f.read(), "old")
+
+    def test_a_folder_that_stays_locked_reports_it_and_names_the_antivirus(self):
+        with tempfile.TemporaryDirectory() as d:
+            data, staging, exe_dir = self._staged(d)
+            with mock.patch.object(setup.os, "replace", side_effect=self._flaky_replace(1000)), \
+                    mock.patch.object(setup.time, "sleep"):
+                with self.assertRaises(setup.SetupError) as cm:
+                    setup.publish_build(staging, exe_dir, data)
+            self.assertIn("is in use", str(cm.exception))
+            self.assertIn("antivirus", str(cm.exception))
+            self.assertTrue(os.path.isdir(staging))  # nothing half-published
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
