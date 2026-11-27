@@ -143,6 +143,17 @@ the same step with no tail; 400 points 60°, 1000 points 90° and then 60° (the
 diagonal 200/200 30°/30°. With the mouse camera off (Mouse aiming source) and with a controller's right stick
 the camera angles are the same as before, step for step.
 
+Later fixes: the movement is taken once per logic step at the step's first controller read, and movement that
+arrives after it (a Pro Controller's KPAD read after the GamePad's, code mods' and story mods' input reads,
+climbing's B check, the decomp version's true 60, which reads on every step) now stays for the next step.
+Before, these later reads threw it away, so first person turned less than the camera on foot. In true 60
+(N > 1) the game moves the pitch by `dt` of its rate and Link's own call turns him by `dt` of the yaw share
+(`d_camera_subject.cpp`), so the frame's movement is spread over its steps, each fed with that step's speed
+(`camera_mouse.h`, `frame_part` and `step_speeds`). **First-person sensitivity** (0.25x to 4x) multiplies the
+mouse sensitivity here only. Measured on the Mac (hidden runs, mouse movement from a thread of its own as a real
+mouse's events, `WWHD_TEST_MOUSE_HOST=1`): 0.150° per point on foot, in R3 look, with the bow and the telescope
+at 30, 60 and 120 fps, 0.300° in first person at 2x, 1.000° at sensitivity 1.00.
+
 ## Phone sensors
 
 On Android choose **Device gyro (phone/tablet)** in **Settings > Controls > Controller > Gyro**.

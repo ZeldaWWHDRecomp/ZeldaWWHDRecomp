@@ -20,6 +20,12 @@ what is on `devel` and not released yet (also in the
 
 ### New
 
+- **Mouse camera: First-person sensitivity** (Settings › Controls › Camera, under Mouse sensitivity). It multiplies
+  the mouse sensitivity in first person and while aiming only (R3 look, bow, hookshot, boomerang, grappling hook,
+  telescope, Picto Box): 0.25x to 4x, 1.00x by default, so looking around on foot and aiming can turn at different
+  speeds. Also on the item menu's settings page and in the macOS Controls window; saved with the profile
+  (`WWHD_MOD_MOUSE_FP` for a run). **Mouse sensitivity now goes up to 1.00 degree per point** (before: 0.30), for
+  400 to 800 DPI mice. The minimum (0.08) and the default (0.15) are unchanged.
 - **First-person aiming: Right stick (HD) or Left stick (classic)** (#666, thanks @rnp509). A new choice in
   **Settings › Controls › Camera**: with *Left stick (classic)* the left stick aims in first person, as on the
   GameCube: R3 look, the bow, hookshot, boomerang, grappling hook, telescope and Picto Box (also from the boat), and
@@ -74,6 +80,17 @@ what is on `devel` and not released yet (also in the
 
 ### Fixed
 
+- **Mouse camera: first person and aiming now turn exactly as far as the camera on foot.** With the same Mouse
+  sensitivity, first person and the item aims could turn noticeably less than the camera on foot. Mouse movement
+  that arrived while the game read the controller a second time in a logic step was thrown away in first person.
+  That happens with a Pro Controller connected, with code mods and story mods that read the input, while climbing
+  and, above all, in the decomp version's true 60 / 120 fps logic, which reads on every step. There, first person
+  also turned by only part of the movement, because the game moves first-person
+  aiming by a share of the step. Movement now carries over to the next step, and in true 60 it is spread over the
+  frame's steps, so one mouse point turns the view by the sensitivity's degrees at every frame rate. The camera on
+  foot also no longer loses the first 1/30 s of a movement from rest. Releases before v0.5.2 aimed first person
+  through an emulated right stick that ignored Mouse sensitivity and topped out at 108 degrees a second; v0.5.2
+  already replaced it.
 - **Decomp version: setup's model preparation no longer stops on some stage rooms with "Latte GLSL translation
   failed"** (#682, thanks @radialmonster). The decomp version's native renderer (Vulkan) keeps a description of each
   J3D material draw and reuses it while the material's objects stay at the same addresses. A room or model loaded
