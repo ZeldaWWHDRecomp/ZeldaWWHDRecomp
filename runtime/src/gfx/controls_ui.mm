@@ -25,6 +25,7 @@
 #include "../input.h"
 #include "../mods/manager.h"
 #include "../mods/mods.h"
+#include "../mods/camera_mouse.h"
 #include "../mods/game_settings.h"
 #include "../input_map.h"
 #include "../runtime.h"
@@ -242,6 +243,7 @@ struct UIState {
 @property(strong) NSArray<NSButton*>* cameraButtons;
 @property(strong) NSSlider* cameraSpeed;
 @property(strong) NSSlider* mouseSensitivity;
+@property(strong) NSSlider* mouseFirstPerson;
 @property(strong) NSPopUpButton* stickPitch;  // Right stick up/down (#661)
 @property(strong) NSPopUpButton* aimStick;    // First-person aiming: right / left stick (#666)
 @property(strong) NSButton* skipController;
@@ -1209,11 +1211,19 @@ static NSTextField* label(NSString* s) {
     cameraSpeed.toolTip = @"Direct camera speed (0.5x to 2x).";
     [cameraSpeed.widthAnchor constraintEqualToConstant:160].active = YES;
     self.cameraSpeed = cameraSpeed;
-    NSSlider* mouseSensitivity = [NSSlider sliderWithValue:mods::mouse_sensitivity() minValue:.08 maxValue:.3 target:self action:@selector(mouseSensitivityChanged:)];
+    NSSlider* mouseSensitivity = [NSSlider sliderWithValue:mods::mouse_sensitivity() minValue:mods::camera_mouse::kSensitivityMin
+                                                  maxValue:mods::camera_mouse::kSensitivityMax target:self action:@selector(mouseSensitivityChanged:)];
     mouseSensitivity.continuous = YES;
-    mouseSensitivity.toolTip = @"Mouse camera sensitivity.";
+    mouseSensitivity.toolTip = @"Mouse camera sensitivity: degrees per mouse point (0.08 to 1.00), on foot, sailing, in first person and when aiming.";
     [mouseSensitivity.widthAnchor constraintEqualToConstant:160].active = YES;
     self.mouseSensitivity = mouseSensitivity;
+    NSSlider* mouseFirstPerson = [NSSlider sliderWithValue:mods::mouse_first_person_scale() minValue:mods::camera_mouse::kFirstPersonMin
+                                                  maxValue:mods::camera_mouse::kFirstPersonMax target:self action:@selector(mouseFirstPersonChanged:)];
+    mouseFirstPerson.continuous = YES;
+    mouseFirstPerson.toolTip = @"First-person sensitivity: a multiplier of the mouse sensitivity in first person and when aiming only "
+                               @"(0.25x to 4x; 1x: the same as on foot).";
+    [mouseFirstPerson.widthAnchor constraintEqualToConstant:160].active = YES;
+    self.mouseFirstPerson = mouseFirstPerson;
     // issue #661: the right stick's up/down in the follow camera (mods/camera.cpp look_pitch)
     NSPopUpButton* stickPitch = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [stickPitch addItemsWithTitles:@[@"Zoom (original)", @"Look up and down"]];
@@ -1234,7 +1244,8 @@ static NSTextField* label(NSString* s) {
                                                                    label(@"Right stick up/down:"),stickPitch]];
     cameraOptions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     cameraOptions.spacing = 12;
-    NSStackView* aimOptions = [NSStackView stackViewWithViews:@[label(@"First-person aiming:"),aimStick]];
+    NSStackView* aimOptions = [NSStackView stackViewWithViews:@[label(@"First-person aiming:"),aimStick,
+                                                                label(@"First-person mouse sensitivity:"),mouseFirstPerson]];
     aimOptions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     aimOptions.spacing = 12;
     for (NSView* v in @[bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pcl, pc, ptc, cameras, cameraOptions, aimOptions]) {
@@ -1316,6 +1327,7 @@ static NSTextField* label(NSString* s) {
         self.cameraButtons[i].state = mods::manager::find(ids[i])->enabled() ? NSControlStateValueOn : NSControlStateValueOff;
     self.cameraSpeed.doubleValue = mods::camera_speed();
     self.mouseSensitivity.doubleValue = mods::mouse_sensitivity();
+    self.mouseFirstPerson.doubleValue = mods::mouse_first_person_scale();
     [self.stickPitch selectItemAtIndex:mods::camera_stick_pitch() ? 1 : 0];
     [self.aimStick selectItemAtIndex:mods::aim_left_stick() ? 1 : 0];
     self.invertY.state = _st.m.invert_camera_y ? NSControlStateValueOn : NSControlStateValueOff;
@@ -1720,6 +1732,7 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
 }
 - (void)cameraSpeedChanged:(NSSlider*)s { game_settings::set_camera_speed(s.floatValue); }
 - (void)mouseSensitivityChanged:(NSSlider*)s { game_settings::set_mouse_sensitivity(s.floatValue); }
+- (void)mouseFirstPersonChanged:(NSSlider*)s { game_settings::set_mouse_first_person_scale(s.floatValue); }
 - (void)stickPitchChanged:(NSPopUpButton*)p { mods::set_camera_stick_pitch(p.indexOfSelectedItem == 1); }
 - (void)aimStickChanged:(NSPopUpButton*)p { mods::set_aim_left_stick(p.indexOfSelectedItem == 1); }
 

@@ -16,6 +16,7 @@
 #include "input_map.h"
 #include "manager.h"
 #include "mods.h"
+#include "camera_mouse.h"
 #include "packages.h"
 #include "game_settings_graphics.h"
 #include "player_name.h"
@@ -95,6 +96,11 @@ void set_mouse_sensitivity(float degrees) {
     mods::set_mouse_sensitivity(degrees);
     hostui::set("mod.mouse-camera.sensitivity", std::to_string(degrees));
     mods::packages::remember_option("mouse-camera.sensitivity", degrees);
+}
+void set_mouse_first_person_scale(float scale) {
+    mods::set_mouse_first_person_scale(scale);
+    hostui::set("mod.mouse-camera.first-person", std::to_string(scale));
+    mods::packages::remember_option("mouse-camera.first-person", scale);
 }
 void set_invert_camera_y(bool on) {
     input_map::Mapping m = input_map::current();
@@ -891,7 +897,7 @@ void register_builtin() {
         Item it;
         it.id = "mouse-camera.sensitivity", it.tab = "camera", it.label = "Mouse sensitivity", it.kind = Kind::Number;
         it.help = "How far the camera turns per mouse movement, the same in first person and when aiming.";
-        it.min = 0.08f, it.max = 0.30f, it.step = 0.02f;
+        it.min = mods::camera_mouse::kSensitivityMin, it.max = mods::camera_mouse::kSensitivityMax, it.step = 0.02f;
         it.get = [] { return mods::mouse_sensitivity(); };
         it.set = [](float v) { set_mouse_sensitivity(v); };
         it.format = [](float v) {
@@ -899,6 +905,17 @@ void register_builtin() {
             std::snprintf(b, sizeof b, "%.2f", v);
             return std::string(b);
         };
+        it.enabled = [] { return mods::mouse_camera(); };
+        add(std::move(it));
+    }
+    {
+        Item it;
+        it.id = "mouse-camera.first-person", it.tab = "camera", it.label = "First-person sensitivity", it.kind = Kind::Number;
+        it.help = "A multiplier of the mouse sensitivity in first person and when aiming only (1.00x: the same as on foot).";
+        it.min = mods::camera_mouse::kFirstPersonMin, it.max = mods::camera_mouse::kFirstPersonMax, it.step = 0.25f;
+        it.get = [] { return mods::mouse_first_person_scale(); };
+        it.set = [](float v) { set_mouse_first_person_scale(v); };
+        it.format = times;
         it.enabled = [] { return mods::mouse_camera(); };
         add(std::move(it));
     }

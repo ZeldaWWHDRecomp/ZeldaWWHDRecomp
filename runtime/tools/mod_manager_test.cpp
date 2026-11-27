@@ -12,7 +12,7 @@
 
 namespace {
 bool state[7]{};
-float speed = 1, sensitivity = .15f;
+float speed = 1, sensitivity = .15f, first_person_scale = 1.f;
 std::map<std::string,std::string> preferences;
 int reads = 0, writes = 0;
 void env(const char* key, const char* value) {
@@ -86,6 +86,8 @@ float quick_use_speed() { return quick_speed; }
 void set_quick_use_speed(float f) { if (f == 1.f || f == 1.25f || f == 1.5f) quick_speed = f; }
 void set_camera_speed(float f) { speed=f; }
 void set_mouse_sensitivity(float f) { sensitivity=f; }
+float mouse_first_person_scale() { return first_person_scale; }
+void set_mouse_first_person_scale(float f) { first_person_scale=f; }
 }
 // the built-in Achievements (mods/achievements.cpp)
 namespace achievements {
@@ -259,6 +261,18 @@ int main() {
     preferences["mod.direct-camera.speed"]="1.5";
     preferences["mod.mouse-camera.sensitivity"]="nan";
     load_saved();assert(state[3]);assert(!state[4]);assert(speed==1.5f);assert(sensitivity==.15f);
+    // the mouse sensitivity reaches 1 degree per point (was 0.30); First-person sensitivity 0.25x..4x; the env wins
+    preferences["mod.mouse-camera.sensitivity"]="0.8";preferences["mod.mouse-camera.first-person"]="2.5";
+    load_saved();assert(sensitivity==.8f&&first_person_scale==2.5f);
+    preferences["mod.mouse-camera.sensitivity"]="1.2";preferences["mod.mouse-camera.first-person"]="5";
+    load_saved();assert(sensitivity==.8f&&first_person_scale==2.5f);  // out of range: kept
+    preferences["mod.mouse-camera.sensitivity"]="0.05";preferences["mod.mouse-camera.first-person"]="0.2";
+    load_saved();assert(sensitivity==.8f&&first_person_scale==2.5f);
+    preferences["mod.mouse-camera.first-person"]="0.25";env("WWHD_MOD_MOUSE_FP","1");
+    load_saved();assert(first_person_scale==2.5f);  // WWHD_MOD_MOUSE_FP overrides the saved choice
+    env("WWHD_MOD_MOUSE_FP",nullptr);load_saved();assert(first_person_scale==.25f);
+    preferences.erase("mod.mouse-camera.first-person");sensitivity=.15f;first_person_scale=1.f;
+    preferences["mod.mouse-camera.sensitivity"]="nan";
     // Explicit zero and nonzero overrides both prevent loading saved state.
     state[3]=false;env("WWHD_CLIMB","0");load_saved();assert(!state[3]);
     preferences["mod.direct-camera.enabled"]="0";

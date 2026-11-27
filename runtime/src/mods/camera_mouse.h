@@ -5,6 +5,14 @@
 #include <cstdint>
 
 namespace mods::camera_mouse {
+// Settings › Controls › Camera › Mouse camera: the sensitivity (degrees per mouse point, everywhere) and the
+// First-person sensitivity (a multiplier of it in first person and the item aims only)
+inline constexpr float kSensitivityMin = 0.08f, kSensitivityMax = 1.0f, kSensitivityDefault = 0.15f;
+inline constexpr float kFirstPersonMin = 0.25f, kFirstPersonMax = 4.0f, kFirstPersonDefault = 1.0f;
+inline constexpr bool valid_sensitivity(double v) { return v >= kSensitivityMin && v <= kSensitivityMax; }
+inline constexpr bool valid_first_person(double v) { return v >= kFirstPersonMin && v <= kFirstPersonMax; }
+// degrees per point in first person and the item aims
+inline constexpr float look_degrees_per_point(float sensitivity, float first_person) { return sensitivity * first_person; }
 // HD procedure IDs from the item-aim initializers. 0x86..0x89 are boarding/sailing/paddling,
 // not aiming; 0x8A..0x8D are telescope/boomerang/hookshot/bow on the boat.
 inline constexpr bool aiming_item(uint32_t proc) {
@@ -47,11 +55,13 @@ struct SubjectStep {
 // away from zero, so that float rounding cannot change the result)
 inline double landing(double to) { return to == 0 ? 0 : to + std::copysign(0.5, to); }
 // right / down: degrees (down: the view looks down, after the player's inversion); rest_*: the previous step's rest;
-// m388: the game's pitch so far (-1..1); k_eff: the speed the game uses this step (speed x zoom slow-down)
+// m388: the game's pitch so far (-1..1); k_eff: the speed the game uses this step (speed x zoom slow-down);
+// k_pitch: the pitch's own (true 60: k_eff x the step's dt, as the game moves m388 by dt of the rate; < 0: k_eff)
 inline SubjectStep subject_step(double right, double down, double rest_yaw, double rest_pitch, double k_eff,
-                                double yaw_max, double pitch_max, double m388, bool swim) {
+                                double yaw_max, double pitch_max, double m388, bool swim, double k_pitch = -1) {
     SubjectStep r;
-    if (!(k_eff > 1e-6) || !(yaw_max > 1e-3) || !(pitch_max > 1e-3)) return r;  // not a subject style: nothing
+    if (k_pitch < 0) k_pitch = k_eff;
+    if (!(k_eff > 1e-6) || !(k_pitch > 1e-6) || !(yaw_max > 1e-3) || !(pitch_max > 1e-3)) return r;  // not a subject style
     // yaw: a turn of its own each step, at most yaw_max
     const double want_yaw = right * kUnitsPerDegree + rest_yaw, max_yaw = std::floor(yaw_max * kUnitsPerDegree);
     const double to_yaw = std::clamp(std::nearbyint(want_yaw), -max_yaw, max_yaw);
@@ -67,9 +77,24 @@ inline SubjectStep subject_step(double right, double down, double rest_yaw, doub
     const double want_pitch = shown + (swim ? -down : down) * kUnitsPerDegree + rest_pitch;  // swimming: as the gyro
     const double to_pitch = std::nearbyint(want_pitch);
     r.rest_pitch = std::fabs(to_pitch) < std::floor(range) ? want_pitch - to_pitch : 0;
-    const double fed = (landing(to_pitch) - now) / kUnitsPerDegree / (pitch_max * k_eff);
+    const double fed = (landing(to_pitch) - now) / kUnitsPerDegree / (pitch_max * k_pitch);
     r.y = static_cast<float>(swim ? -fed : fed);
     return r;
+}
+// True 60 (decomp build, N steps per 30 Hz frame): CalcSubjectAngle runs on every step, and the game moves the
+// pitch by dt of its rate (m388 += y x k x dt) and, in Link's own call, turns him by dt of the yaw share (the camera's
+// call shows the whole share). The 30 Hz frame's mouse movement is spread over the frame's steps (what is left, over
+// the steps left: step k of N takes left / (N - k + 1)), each fed with the speed the game uses on that step, so the
+// steps sum to the frame's degrees exactly as at 30 Hz.
+inline double frame_part(double left, unsigned stepk, unsigned n) {
+    const unsigned steps_left = n >= stepk && stepk >= 1 ? n - stepk + 1 : 1;
+    return left / steps_left;
+}
+// the speeds for subject_step on a true-60 step: yaw (Link's call: dt of it; the camera's call: all of it), pitch
+struct StepSpeeds { double yaw, pitch; };
+inline StepSpeeds step_speeds(double k_eff, double dt, bool camera_call) {
+    if (!(dt > 0) || dt >= 1) return {k_eff, k_eff};
+    return {camera_call ? k_eff : k_eff * dt, k_eff * dt};
 }
 // The drawn view follows those angles with an ease per step (camera parameter 20: 0.45 in R3 look and the item aims,
 // 0.6 boomerang, 0.75 telescope / Picto Box). While the mouse looks around the view takes the angles at once.

@@ -259,8 +259,16 @@ mouse to look around on foot or while sailing, at the same mouse sensitivity. In
 whenever Link aims in first person (bow, hookshot, boomerang, grappling hook, telescope, Picto Box) the mouse
 turns the view directly, as in a PC shooter: one mouse movement turns it by a fixed angle, the mouse
 sensitivity's degrees per point, the same in every view and the same as on foot, with no acceleration and no
-easing; the view follows in the same logic step. Nothing needs setting up (no gyro source, no game
-**Options → Gyro**). The game's own limits stay: how far you can look up and down, and the telescope's and
+easing; the view follows in the same logic step. This holds at every frame rate (30, 60 and 120 fps, and the
+decomp version's true 60 / 120 fps logic) and with every controller setup. Nothing needs setting up (no gyro source,
+no game **Options → Gyro**).
+
+**Mouse sensitivity** (0.08 to 1.00 degrees per point, 0.15 by default) is the turn per mouse point everywhere.
+For a 400 or 800 DPI mouse, values from 0.3 up are common. **First-person sensitivity** (0.25x to 4x, 1.00x
+by default) multiplies it in first person and while aiming only, for players who want aiming slower or faster
+than looking around on foot. At 1.00x both turn the same. Both are in **Settings → Controls → Camera** (also on
+the item menu's settings page and in the macOS Controls window) and are saved with the profile.
+`WWHD_MOD_MOUSE_SENS` and `WWHD_MOD_MOUSE_FP` override them for a run. The game's own limits stay: how far you can look up and down, and the telescope's and
 Picto Box's slower turning while zoomed in. Up/down follows **Invert camera up/down**, as on foot; the game's
 own aiming inversion option is for the right stick (as with the gyro, it does not apply to the mouse). A right
 stick pushed at the same time aims instead, as the game does with the gyro. With

@@ -20,11 +20,12 @@ void controller_values(float* v){std::fill(v,v+input_map::kPadCount,0.f);}
 // Exercise the actual controls' routing without linking the game or writing player settings.
 namespace {
 bool cameraFlags[3]{};
-float cameraSpeed = 1.f, mouseSensitivity = .15f;
+float cameraSpeed = 1.f, mouseSensitivity = .15f, mouseFirstPerson = 1.f;
 }
 namespace mods {
 float camera_speed() { return cameraSpeed; }
 float mouse_sensitivity() { return mouseSensitivity; }
+float mouse_first_person_scale() { return mouseFirstPerson; }
 bool stickPitch = false;
 bool camera_stick_pitch() { return stickPitch; }
 void set_camera_stick_pitch(bool look) { stickPitch = look; }
@@ -35,6 +36,7 @@ void set_aim_left_stick(bool left) { aimLeft = left; }
 namespace game_settings {
 void set_camera_speed(float v) { cameraSpeed = v; }
 void set_mouse_sensitivity(float v) { mouseSensitivity = v; }
+void set_mouse_first_person_scale(float v) { mouseFirstPerson = v; }
 }
 namespace mods::manager {
 const Entry* find(std::string_view id) {
@@ -208,6 +210,14 @@ int main() {
         [g_controls syncOptions];
         assert(g_controls.cameraButtons[1].state==NSControlStateValueOff);
         assert(g_controls.cameraSpeed.floatValue==1.25f && g_controls.mouseSensitivity.floatValue==.125f);
+        // the sensitivity reaches 1 degree per point; First-person sensitivity 0.25x..4x, its own setter, synced back
+        assert(g_controls.mouseSensitivity.minValue==mods::camera_mouse::kSensitivityMin && g_controls.mouseSensitivity.maxValue==1.0);
+        assert(g_controls.mouseFirstPerson.minValue==.25 && g_controls.mouseFirstPerson.maxValue==4.0 && g_controls.mouseFirstPerson.floatValue==1.f);
+        g_controls.mouseSensitivity.floatValue=.8f;[g_controls mouseSensitivityChanged:g_controls.mouseSensitivity];
+        assert(mouseSensitivity==.8f);
+        g_controls.mouseFirstPerson.floatValue=2.5f;[g_controls mouseFirstPersonChanged:g_controls.mouseFirstPerson];
+        assert(mouseFirstPerson==2.5f && mouseSensitivity==.8f);
+        mouseFirstPerson=.5f;[g_controls syncOptions];assert(g_controls.mouseFirstPerson.floatValue==.5f);
         // #661: Right stick up/down, Zoom (original) by default
         assert(g_controls.stickPitch.indexOfSelectedItem==0);
         [g_controls.stickPitch selectItemAtIndex:1];[g_controls stickPitchChanged:g_controls.stickPitch];

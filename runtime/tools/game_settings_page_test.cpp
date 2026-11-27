@@ -394,6 +394,11 @@ int main() {
                               "The stick that aims in first person. Left: as on the GameCube; the right stick then moves and zooms."})
             for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
         assert(game_settings_text::tr("Left stick (classic)", 3) == "Linker Stick (klassisch)");
+        // the Camera tab's First-person sensitivity (the mouse camera's multiplier in first person and when aiming)
+        for (const char* w : {"First-person sensitivity",
+                              "A multiplier of the mouse sensitivity in first person and when aiming only (1.00x: the same as on foot)."})
+            for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
+        assert(game_settings_text::tr("First-person sensitivity", 3) == "Empfindlichkeit Ich-Perspektive");
     }
     std::puts("game_settings_page_test: ok");
 }

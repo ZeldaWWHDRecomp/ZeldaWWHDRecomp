@@ -30,8 +30,9 @@
 //   are not item aiming: classifying them as aiming consumed the deltas before these sites ran.
 //   In first person and every item aim (dCamera_c::subjectCamera 025071FC ran, or Link aims an item) the
 //   mouse turns the view directly, as in a PC shooter (issue #558): one point turns it by the sensitivity's
-//   degrees, the same as the follow camera, in every view (R3 look, bow, hookshot, boomerang, grappling hook,
-//   telescope, Picto Box). @02506CEC adds the turn to CalcSubjectAngle's GamePad (gyro) input, scaled by the
+//   degrees (times First-person sensitivity, 1 by default), the same as the follow camera, in every view (R3 look,
+//   bow, hookshot, boomerang, grappling hook, telescope, Picto Box), at every frame rate and in true 60.
+//   @02506CEC adds the turn to CalcSubjectAngle's GamePad (gyro) input, scaled by the
 //   live style's speed and yaw / pitch ranges and landed on whole game units (camera_mouse::subject_step), so the
 //   game's own limits stay; @02508380 / @025083C4 drop the drawn view's ease while the mouse looks around (and
 //   the yaw the ease used to hide, which the camera counts twice when Link turned himself). Measured (runs of
@@ -65,11 +66,14 @@
 //
 // Logic only runs on logic passes: the sites run inside the camera's execute, and the camera's
 // manual and subject modes run at 30 Hz with frame interpolation, so the per-step amounts above hold in all modes; interpolation blends the drawn camera.
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "../camera_invert.h"
@@ -86,6 +90,9 @@
 #include "../motion/motion.h"
 #include "runtime.h"
 #include "../editor/editor_game.h"
+#if WWHD_DECOMP
+#include "../t60/t60.h"
+#endif
 
 extern "C" {
 void f_024FA9C8_orig(Cpu* c);  // dCamera_c::nextMode
@@ -110,6 +117,8 @@ uint64_t g_swipe_step = ~0ull;  // logic step of the last swipe movement
 uint64_t g_user_swipe_step = ~0ull, g_user_mouse_step = ~0ull;  // the player's own swipe / mouse (not the swing)
 float g_direct_dx = 0, g_direct_dy = 0;  // this step's movement in degrees, reserved for direct camera sites
 float g_mouse_rx = 0, g_mouse_ry = 0;    // proportional fallback, stable across repeated pad reads
+float g_direct_own_dx = 0, g_direct_own_dy = 0;  // the last snapshot's own movement (without what it kept)
+uint64_t g_direct_own_step = ~0ull;              // its step
 uint64_t g_cannon_step = ~0ull;
 float g_cannon_x = 0, g_cannon_y = 0;
 uint64_t g_sample_step = ~0ull;
@@ -129,6 +138,9 @@ float g_look_dx = 0, g_look_dy = 0;
 double g_look_rest_yaw = 0, g_look_rest_pitch = 0;  // game units carried to the next step (camera_mouse::subject_step)
 uint64_t g_look_step = ~0ull, g_look_used_step = ~0ull;
 bool g_subject_own_angle = false;  // subjectCamera computes the subject angle itself this step (Link did not)
+bool g_in_subject_camera = false;  // inside dCamera_c::subjectCamera (its CalcSubjectAngle call is the camera's, not Link's)
+float g_frame_dx = 0, g_frame_dy = 0;  // true 60: the 30 Hz frame's mouse-look degrees not yet given to its steps
+uint32_t g_look_used_key = ~0u;        // true 60: the step (wwhd_t60_step_counter) that took its share
 
 bool recent(uint64_t s, uint64_t n) { return s != ~0ull && step() <= s + n; }
 // the swing's degrees -> the swipe path's (mouse right = +): the camera's angle grows the other way (measured:
@@ -165,10 +177,42 @@ std::vector<TimedMouse> parse_mouse(const char* var, bool range) {
     }
     return v;
 }
+// WWHD_TEST_MOUSE_HOST=1: the movement comes from a thread of its own instead, as a real mouse's events do (the host's
+// event thread, at any point of the frame): (dx, dy) per 1/30 s of wall-clock time, in 1 ms pieces, while the game
+// time is in the range. It logs the points it gave per range ("[test] host mouse"), for degrees-per-point measurements.
+void host_test_mouse(const std::vector<TimedMouse>& moves) {
+    std::thread([moves] {
+        double sum_x = 0, sum_y = 0;
+        size_t open = ~size_t(0);
+        auto t0 = std::chrono::steady_clock::now();
+        for (;;) {
+            std::this_thread::sleep_until(t0 += std::chrono::milliseconds(1));
+            double t = game_time();
+            if (getenv("WWHD_TEST_MOUSE_ORIGIN")) {
+                const uint64_t o = ::test_aids::origin_step();
+                if (!o) continue;
+                t -= (double)o / 30.0;
+            }
+            size_t in = ~size_t(0);
+            for (size_t i = 0; i < moves.size(); i++)
+                if (t >= moves[i].from && t < moves[i].to) in = i;
+            if (in != open && open != ~size_t(0))
+                LOG("[test] host mouse: range %zu gave %.2f %.2f points (until step %llu)", open, sum_x, sum_y,
+                    (unsigned long long)step());
+            if (in != open) sum_x = sum_y = 0, open = in;
+            if (in == ~size_t(0)) continue;
+            const float dx = moves[in].dx * 30.0f / 1000.0f, dy = moves[in].dy * 30.0f / 1000.0f;
+            sum_x += dx, sum_y += dy;
+            motion::mouse_motion(dx, dy);
+            if (!motion::mouse_drives_gyro()) mouse_add(dx, dy);
+        }
+    }).detach();
+}
 void inject_test_mouse() {
     static const std::vector<TimedMouse> moves = parse_mouse("WWHD_TEST_MOUSE", true);
     static const std::vector<TimedMouse> wheels = parse_mouse("WWHD_TEST_WHEEL", false);
     static uint64_t last = ~0ull;
+    static const bool host = getenv("WWHD_TEST_MOUSE_HOST") && !moves.empty() && (host_test_mouse(moves), true);
     if (moves.empty() && wheels.empty()) return;
     uint64_t s = step();
     if (s == last) return;
@@ -182,7 +226,7 @@ void inject_test_mouse() {
     }
     // as the hosts do (mouse.mm, mouse_sdl.cpp): the mouse gyro source first, then the mouse camera
     for (auto& m : moves)
-        if (t >= m.from && t < m.to) {
+        if (!host && t >= m.from && t < m.to) {
             motion::mouse_motion(m.dx, m.dy);
             if (!motion::mouse_drives_gyro()) mouse_add(m.dx, m.dy);
         }
@@ -315,18 +359,21 @@ void filter_pad(input::PadState& s) {
     const bool swipe = recent(g_swipe_step, 8);
     if (!mouse_active) g_dx = g_dy = 0;
     // first person and item aims: the mouse turns the view directly, in degrees (site_02506CEC), not through a
-    // synthetic right stick. Once per logic step; movement the game does not take (its first-person transition)
-    // is dropped with the next step's.
+    // synthetic right stick. Taken once per logic step, at its first read; movement the game does not take (its
+    // first-person transition) is dropped with the next step's. input::read() runs more than once in some steps (the
+    // Pro Controller's KPAD read after the GamePad's, code mods' input reads, climbing's B check, the scenes' skip
+    // check): movement that arrives after the step's first read stays for the next step, as the follow camera's does
+    // (before, those later reads threw it away, so first person turned slower than the follow camera).
     const bool look = mouse_active && aim;
     if (look && g_look_step != now) {
         g_look_step = now;
-        const float sens = mouse_sensitivity();
-        g_look_dx = g_dx * sens;
-        g_look_dy = g_dy * sens * camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
+        const float deg = camera_mouse::look_degrees_per_point(mouse_sensitivity(), mouse_first_person_scale());
+        g_look_dx = g_dx * deg;
+        g_look_dy = g_dy * deg * camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
+        g_dx = g_dy = 0;
         if (trace_on() && (g_look_dx != 0 || g_look_dy != 0)) trace("mouse look degrees right=%.3f down=%.3f", g_look_dx, g_look_dy);
     }
-    if (look) g_dx = g_dy = 0;
-    else g_look_rest_yaw = g_look_rest_pitch = 0;
+    if (!look) g_look_rest_yaw = g_look_rest_pitch = 0;
     bool active = (mouse_active && !look) || swipe;
     bool stick_free = std::fabs(s.rx) < 0.2f && std::fabs(s.ry) < 0.2f;
     if (cannon && mouse_active) {
@@ -359,13 +406,24 @@ void filter_pad(input::PadState& s) {
             const float boat = camera_swipe::step_factor(link_in_ship(), aim, touch_options::get().swipe_boat);
             // degrees for the direct sites; the fallback stick sees mouse points (the swipe as points at
             // the nominal sensitivity, so its stick does not depend on the mouse setting)
-            g_direct_dx = g_dx * sens + g_swipe_dx * boat;
-            g_direct_dy = g_dy * sens + g_swipe_dy * boat;
-            const float px = g_dx + g_swipe_dx * boat / camera_swipe::kNominalSensitivity;
-            const float py = g_dy + g_swipe_dy * boat / camera_swipe::kNominalSensitivity;
+            // The step before's own movement that manualCamera did not take yet is kept once: the first step of a
+            // movement from rest only wakes manualCamera (nextMode), which turns from the next step on; before, that
+            // step's movement was lost (one step of every movement from rest: 1/30 s less turn than first person).
+            const bool kept = g_direct_own_step != ~0ull && g_direct_own_step + 1 == now;
+            const float keep_x = kept ? std::clamp(g_direct_dx, -std::fabs(g_direct_own_dx), std::fabs(g_direct_own_dx)) : 0.0f;
+            const float keep_y = kept ? std::clamp(g_direct_dy, -std::fabs(g_direct_own_dy), std::fabs(g_direct_own_dy)) : 0.0f;
+            // (a swipe while the mouse looks around in first person: the mouse's movement is the look's, not this)
+            const float mdx = look ? 0.0f : g_dx, mdy = look ? 0.0f : g_dy;
+            g_direct_own_dx = mdx * sens + g_swipe_dx * boat;
+            g_direct_own_dy = mdy * sens + g_swipe_dy * boat;
+            g_direct_own_step = now;
+            g_direct_dx = g_direct_own_dx + keep_x;
+            g_direct_dy = g_direct_own_dy + keep_y;
+            const float px = mdx + g_swipe_dx * boat / camera_swipe::kNominalSensitivity;
+            const float py = mdy + g_swipe_dy * boat / camera_swipe::kNominalSensitivity;
             g_mouse_rx = camera_mouse::fallback_stick(px);
             g_mouse_ry = camera_mouse::fallback_stick(-py);
-            g_dx = g_dy = 0;
+            if (!look) g_dx = g_dy = 0;
             g_swipe_dx = g_swipe_dy = 0;
             if (trace_on()) trace("%s input degrees dx=%.3f dy=%.3f rx=%.3f ry=%.3f aim=%d boat=%.2f",
                                   swipe ? "swipe" : "mouse", g_direct_dx, g_direct_dy, g_mouse_rx, g_mouse_ry, aim, boat);
@@ -611,12 +669,31 @@ extern "C" void site_02506CEC(Cpu* c) {
     camera_mouse::SubjectStep st;
     {
         std::lock_guard<std::mutex> lk(g_mu);
-        if (g_look_step == ~0ull || step() > g_look_step + 1) return;
-        dx = g_look_dx, dy = g_look_dy;
-        g_look_dx = g_look_dy = 0;
+        if (g_look_step == ~0ull || step() > g_look_step + 1) {
+            g_frame_dx = g_frame_dy = 0;
+            return;
+        }
+        camera_mouse::StepSpeeds kk{k, k};
+#if WWHD_DECOMP
+        // true 60 (camera_mouse.h frame_part): the frame's movement spread over its steps, once per step
+        if (t60::active() && wwhd_t60_steps > 1) {
+            if (g_look_used_key == wwhd_t60_step_counter) return;  // its second call in the step (camera after Link)
+            g_look_used_key = wwhd_t60_step_counter;
+            g_frame_dx += g_look_dx, g_frame_dy += g_look_dy;
+            g_look_dx = g_look_dy = 0;
+            dx = (float)camera_mouse::frame_part(g_frame_dx, wwhd_t60_stepk, wwhd_t60_steps);
+            dy = (float)camera_mouse::frame_part(g_frame_dy, wwhd_t60_stepk, wwhd_t60_steps);
+            g_frame_dx -= dx, g_frame_dy -= dy;
+            kk = camera_mouse::step_speeds(k, wwhd_t60_dt, g_in_subject_camera);
+        } else
+#endif
+        {
+            dx = g_look_dx, dy = g_look_dy;
+            g_look_dx = g_look_dy = 0;
+        }
         if (dx == 0 && dy == 0 && std::fabs(g_look_rest_yaw) < 0.5 && std::fabs(g_look_rest_pitch) < 0.5) return;
-        st = camera_mouse::subject_step(dx, dy, g_look_rest_yaw, g_look_rest_pitch, k, c->f[28].ps0, c->f[27].ps0,
-                                        ldf32(cam + 0x38C), c->r[31] != 0);
+        st = camera_mouse::subject_step(dx, dy, g_look_rest_yaw, g_look_rest_pitch, kk.yaw, c->f[28].ps0, c->f[27].ps0,
+                                        ldf32(cam + 0x38C), c->r[31] != 0, kk.pitch);
         g_look_rest_yaw = st.rest_yaw, g_look_rest_pitch = st.rest_pitch;
         g_look_used_step = step();
     }
@@ -678,7 +755,9 @@ extern "C" void hook_025071FC(Cpu* c) {
     g_cam.store(c->r[3], std::memory_order_relaxed);
     const uint32_t cam = c->r[3];
     g_subject_own_angle = ld8(cam + 0x381) != 0;  // m37D: CalcSubjectAngle not yet run this step (site_025083C4)
+    g_in_subject_camera = true;
     f_025071FC_orig(c);
+    g_in_subject_camera = false;
     if (trace_on()) {
         const uint32_t style = ld32(cam + 0x384), row = GD(0x1004487C) + style * 0x84;
         trace("subject: style %u flags %04X pitch max %.1f speed %.4f yaw max %.1f slow %.3f m384 %.5f m388 %.5f m38C %.3f U %d V %d",

@@ -2,7 +2,8 @@
 //
 // Start-up / test switches (all off by default, also switchable from the Gameplay menu):
 //   WWHD_MOD_DIRECT_CAMERA=1   direct right-stick camera (WWHD_MOD_CAMERA_SPEED=1.5 multiplier)
-//   WWHD_MOD_MOUSE_CAMERA=1    mouse camera (WWHD_MOD_MOUSE_SENS=0.15 degrees per point)
+//   WWHD_MOD_MOUSE_CAMERA=1    mouse camera (WWHD_MOD_MOUSE_SENS=0.15 degrees per point; WWHD_MOD_MOUSE_FP=1.0 the
+//                              first-person / aiming multiplier of it)
 //   WWHD_MOD_FIRST_PERSON=1    first person on R3 / mouse wheel
 //   WWHD_MOD_QUICK_USE=1       one-press items against locked enemies (quick_use.cpp)
 //   WWHD_MOD_QUICK_DOORS=1     quick doors (WWHD_MOD_DOOR_MODE=walk: walk through, WWHD_MOD_WALK_DOORS_A=1 with A)
@@ -45,6 +46,7 @@ std::atomic<bool> g_direct{env_on("WWHD_MOD_DIRECT_CAMERA")};
 std::atomic<float> g_speed{env_f("WWHD_MOD_CAMERA_SPEED", 1.0f)};
 std::atomic<bool> g_mouse{env_on("WWHD_MOD_MOUSE_CAMERA")};
 std::atomic<float> g_sens{env_f("WWHD_MOD_MOUSE_SENS", 0.15f)};
+std::atomic<float> g_fp_sens{env_f("WWHD_MOD_MOUSE_FP", 1.0f)};
 std::atomic<bool> g_fp{env_on("WWHD_MOD_FIRST_PERSON")};
 std::atomic<bool> g_doors{env_on("WWHD_MOD_QUICK_DOORS")};
 std::atomic<int> g_door_mode{[] {
@@ -151,6 +153,11 @@ float mouse_sensitivity() { return g_sens.load(std::memory_order_relaxed); }
 void set_mouse_sensitivity(float s) {
     g_sens = s;
     LOG("[mods] mouse sensitivity %.3f degrees per point", s);
+}
+float mouse_first_person_scale() { return g_fp_sens.load(std::memory_order_relaxed); }
+void set_mouse_first_person_scale(float s) {
+    g_fp_sens = s;
+    LOG("[mods] first-person mouse sensitivity x%.2f", s);
 }
 bool first_person_wheel() { return g_fp.load(std::memory_order_relaxed); }
 void set_first_person_wheel(bool on) { g_fp = on; note("first person on R3 / mouse wheel", on); }
