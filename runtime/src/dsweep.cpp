@@ -1377,7 +1377,7 @@ void check_pool() {
             const uint32_t h = ld32(info + off);
             if (!mem2(h, 0x40)) continue;
             const uint32_t vt = ld32(h + 0xC), destroy = mem2(vt, 0x28) ? ld32(vt + 0x24) : 0;
-            if (vt >= 0x10000000u && vt < 0x10200000u && destroy) {
+            if (vt >= 0x10000000u && vt < 0x10800000u && destroy) {
                 bad.erase(h);
                 continue;
             }
