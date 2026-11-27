@@ -196,6 +196,12 @@ what is on `devel` and not released yet (also in the
   run of the same commit (started with `version` set to the release, e.g. `v0.6.0`) instead of building every
   platform again; the files are checked again (names, version, signatures, the guard) before publishing. Without such
   a dry run the tag builds as before.
+- **Windows compile check of the decomp version** (#678). A new CI workflow (`decomp-windows`) compiles every
+  decompiled source of every game unit with the pinned llvm-mingw and setup's exact Windows options, for x86-64
+  (fast mode, plus a link of five merged units that catches duplicate symbols like #684) and arm64 (plain build).
+  It runs on Linux without the game, on pull requests that touch the decompilation or the decomp build and on every
+  push to devel and main, so a header Windows doesn't have or a libc++ difference shows up before a release instead
+  of in setup on a player's PC. Run it by hand with `tools/decomp_build/windows_compile_check.py`.
 
 ## v0.5.3
 

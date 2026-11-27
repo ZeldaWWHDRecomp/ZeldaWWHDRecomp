@@ -353,6 +353,22 @@ def on(v):
     return (v or "").upper() in ("ON", "1", "TRUE", "YES")
 
 
+def decomp_compile_flags(dbuild, ddir, hooks=True):
+    """How setup compiles a game unit and the hooks (the manifest's "unit_flags", "hooks_flags"): the decomp build
+    DBUILD's compile commands of tools/decomp_build/flags_probe.cpp and hooks_none.cpp, with the paths as placeholders
+    ({sdk}, {tools}, {out}, {decomp}: tools/installer/decomp_setup.py). Also tools/decomp_build/windows_compile_check.py
+    (hooks False: a WWHD_DECOMP_FLAGS_ONLY build, unit flags only)."""
+    mapping = {os.path.join(ROOT, "runtime", "include"): "{sdk}/include",
+               os.path.join(ROOT, "runtime", "src"): "{sdk}/decomp/include",
+               os.path.join(ROOT, "tools", "decomp_build"): "{tools}/decomp_build",
+               os.path.join(dbuild, "decomp"): "{out}",
+               ddir: "{decomp}"}
+    unit_flags = portable_flags(*compile_entry(dbuild, "tools/decomp_build/flags_probe.cpp"), mapping)
+    if not hooks:
+        return unit_flags, None
+    return unit_flags, portable_flags(*compile_entry(dbuild, "tools/decomp_build/hooks_none.cpp"), mapping)
+
+
 def decomp_parts(pkg, dbuild, linkonly, sub, fast):
     """One runtime-only decomp build's part of the release: its link line ({decomp_glue}: setup's hooks and units), how
     setup compiles a game unit and the hooks, its own runtime objects in sdk/SUB/obj. fast: the build must be (and
@@ -391,13 +407,7 @@ def decomp_parts(pkg, dbuild, linkonly, sub, fast):
     shutil.rmtree(stage_tmp, ignore_errors=True)
     if "{decomp_glue}" not in recipe:
         sys.exit("%s: %s is not on the decomp build's link line" % (dbuild, DECOMP_HOOKS_NONE[0]))
-    mapping = {os.path.join(ROOT, "runtime", "include"): "{sdk}/include",
-               os.path.join(ROOT, "runtime", "src"): "{sdk}/decomp/include",
-               os.path.join(ROOT, "tools", "decomp_build"): "{tools}/decomp_build",
-               os.path.join(dbuild, "decomp"): "{out}",
-               ddir: "{decomp}"}
-    unit_flags = portable_flags(*compile_entry(dbuild, "tools/decomp_build/flags_probe.cpp"), mapping)
-    hooks_flags = portable_flags(*compile_entry(dbuild, "tools/decomp_build/hooks_none.cpp"), mapping)
+    unit_flags, hooks_flags = decomp_compile_flags(dbuild, ddir)
     print("decomp version (%s): %d own runtime objects" % ("fast mode" if fast else "plain build", own))
     return ddir, {"link": recipe, "unit_flags": unit_flags, "hooks_flags": hooks_flags}
 

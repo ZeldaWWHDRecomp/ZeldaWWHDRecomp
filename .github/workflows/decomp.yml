@@ -2,6 +2,7 @@
 # variant). The WWHD_DECOMP=ON build itself is not made here: since decomp 2c1deae its configure step
 # reads the user's own game (model data, source glue; tools/decomp_build/gen.py --game), which CI does
 # not have. Informational: it never blocks the other workflows or a release (continue-on-error).
+# The game units are compiled for Windows without the game in decomp-windows.yml (gen.py --no-game).
 name: decomp
 
 on:
