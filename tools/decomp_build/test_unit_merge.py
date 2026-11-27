@@ -3,7 +3,8 @@
 own merge commands (tools/installer/decomp_platform.merge_commands) on two units that each define the same hidden
 function, the same hidden variable and the same inline function (one copy per unit, a comdat), plus an exported
 entry wwhd_ne_unitN, a default-visibility variable shared with the program and a weak default function the program
-overrides (as gabi.h's gmem_frame_info and the runtime's). The program is linked as setup links
+overrides (as gabi.h's gmem_frame_info and the runtime's with a decompilation from before GABI_FRAME_INFO_EXTERN;
+now the units only declare it: test_frame_info_extern.py). The program is linked as setup links
 the decomp version (the toolchain's compiler driver); run where it can run, it prints what each unit computed. Without
 isolation the link fails (two definitions of the hidden function) or a unit uses the other unit's inline copy.
 
@@ -31,8 +32,8 @@ extern "C" __attribute__((visibility("default"))) int g_shared;
 inline __attribute__((noinline)) int pick() { return UNIT * 100 + g_shared; }  // each unit's own copy (comdat)
 int helper();        // hidden, defined in every unit
 extern int counter;  // hidden, defined in every unit
-// a weak default in every unit that the program overrides (gabi.h's gmem_frame_info, which runtime/src/decomp/frames.cpp
-// defines): on Windows a weak external per unit object; the program's own definition must win
+// a weak default in every unit that the program overrides (gabi.h's gmem_frame_info before GABI_FRAME_INFO_EXTERN, which
+// runtime/src/decomp/frames.cpp defines): on Windows a weak external per unit object; the program's own definition must win
 extern "C" __attribute__((visibility("default"), weak)) int g_hook(int x) { return -x; }
 """
 SOURCE_A = r"""#include "u.h"
