@@ -332,7 +332,26 @@ extern "C" void ppc_host_call(Cpu* c, PpcFunc fn) {
 extern "C" void ppc_dispatch(Cpu* c) {
     if (mainprof::on(c)) mainprof::bump(mainprof::g_dispatches);
     PpcFunc f = dispatch::lookup(c->pc);
-    if (!f) fatal("indirect branch to unknown address %08X (lr=%08X ctr=%08X)", c->pc, c->lr, c->ctr);
+    if (!f) {
+        // a call through a vtable or function pointer: r3 is usually the object; its first words and, when one
+        // of them points into guest memory, the words there (the vtable) say which object and slot was null
+        const auto rd = [](uint32_t a) {
+            if (a < mem::kMem2Start || a > mem::kMem2End - 4) return 0u;
+            uint32_t v;
+            std::memcpy(&v, mem::ptr(a), 4);
+            return uint32_t(__builtin_bswap32(v));
+        };
+        const uint32_t o = c->r[3];
+        LOG("[runtime error] branch to %08X: r1 %08X r3 %08X r4 %08X r5 %08X r31 %08X; r3 words %08X %08X %08X %08X",
+            c->pc, c->r[1], o, c->r[4], c->r[5], c->r[31], rd(o), rd(o + 4), rd(o + 8), rd(o + 12));
+        for (uint32_t k = 0; k < 4; ++k) {
+            const uint32_t vt = rd(o + 4 * k);
+            if (rd(vt) || rd(vt + 4))
+                LOG("[runtime error]   at r3+%u -> %08X: %08X %08X %08X %08X %08X %08X %08X %08X", 4 * k, vt, rd(vt),
+                    rd(vt + 4), rd(vt + 8), rd(vt + 12), rd(vt + 16), rd(vt + 20), rd(vt + 24), rd(vt + 28));
+        }
+        fatal("indirect branch to unknown address %08X (lr=%08X ctr=%08X)", c->pc, c->lr, c->ctr);
+    }
     if (c->pc - dispatch::kSlotBase < dispatch::kSlotSize ||
         c->pc - mem::kHleFuncBase < dispatch::kHostSize) {
         ppc_host_call(c, f);
