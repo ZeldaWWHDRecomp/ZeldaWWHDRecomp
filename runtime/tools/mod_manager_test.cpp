@@ -2,6 +2,7 @@
 #include "mods/achievements_host.h"
 #include "mods/manager.h"
 #include "mods/mods.h"
+#include "mods/mouse_wheel.h"
 #include "mods/climb.h"
 #include "overlay/hostui.h"
 #include <cassert>
@@ -68,7 +69,12 @@ static bool camera_items = false;
 bool camera_directed_items() { return camera_items; } void set_camera_directed_items(bool b) { camera_items=b; }
 bool direct_camera() { return state[0]; } void set_direct_camera(bool b) { state[0]=b; }
 bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1]=b; }
-bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool b) { state[2]=b; }
+// the Mouse wheel choice as mods.cpp keeps it (mouse_wheel.h); state[2] mirrors First person
+static int wheel_mode = mouse_wheel::kDefault;
+int mouse_wheel_mode() { return wheel_mode; } void set_mouse_wheel_mode(int m) { wheel_mode = m; state[2] = m == mouse_wheel::kFirstPerson; }
+bool mouse_wheel_owned() { return mouse_wheel::owns_wheel(wheel_mode); }
+bool first_person_wheel() { return wheel_mode == mouse_wheel::kFirstPerson; }
+void set_first_person_wheel(bool b) { set_mouse_wheel_mode(mouse_wheel::from_switch(wheel_mode, b)); }
 bool climb_enabled() { return state[3]; } void set_climb_enabled(bool b) { state[3]=b; }
 bool quick_doors() { return state[4]; } void set_quick_doors(bool b) { state[4]=b; }
 static int door_mode_v = 0; static bool doors_by_a = false;
@@ -383,6 +389,41 @@ int main() {
     assert(set_enabled("lock-on",false));assert(preferences["mod.lock-on.enabled"]=="0");
     assert(set_enabled("lock-on",true));disable_all();assert(!mods::extended_lock_on());
     assert(mods::lock_on_range()==1.f && mods::lock_on_cycling());
+    // Mouse wheel (#696): Bindings by default; the old First-person shortcut switch migrates (on: First person, off:
+    // Bindings) until the choice is saved; the choice keeps the switch's key in step; the start-up switches win
+    {
+        env("WWHD_MOUSE_WHEEL",nullptr);env("WWHD_MOD_FIRST_PERSON",nullptr);
+        preferences.erase("mod.mouse-wheel");preferences.erase("mod.first-person.enabled");
+        mods::set_mouse_wheel_mode(mouse_wheel::kDefault);
+        load_saved();assert(mods::mouse_wheel_mode()==mouse_wheel::kBindings&&!find("first-person")->enabled());
+        preferences["mod.first-person.enabled"]="1";load_saved();
+        assert(mods::mouse_wheel_mode()==mouse_wheel::kFirstPerson&&find("first-person")->enabled());
+        preferences["mod.first-person.enabled"]="0";load_saved();assert(mods::mouse_wheel_mode()==mouse_wheel::kBindings);
+        assert(set_mouse_wheel(mouse_wheel::kZoom)&&mods::mouse_wheel_mode()==mouse_wheel::kZoom);
+        assert(preferences["mod.mouse-wheel"]=="1"&&preferences["mod.first-person.enabled"]=="0"&&!find("first-person")->enabled());
+        load_saved();assert(mods::mouse_wheel_mode()==mouse_wheel::kZoom);            // saved: Zoom stays
+        assert(set_enabled("first-person",false)&&mods::mouse_wheel_mode()==mouse_wheel::kZoom);  // off leaves Zoom
+        assert(set_enabled("first-person",true)&&mods::mouse_wheel_mode()==mouse_wheel::kFirstPerson);
+        assert(preferences["mod.mouse-wheel"]=="0");                                 // the switch saves the choice too
+        load_saved();assert(mods::mouse_wheel_mode()==mouse_wheel::kFirstPerson);
+        assert(set_enabled("first-person",false)&&mods::mouse_wheel_mode()==mouse_wheel::kBindings&&preferences["mod.mouse-wheel"]=="2");
+        assert(set_mouse_wheel(7)&&mods::mouse_wheel_mode()==mouse_wheel::kBindings);  // (clamped)
+        preferences["mod.mouse-wheel"]="9";load_saved();assert(mods::mouse_wheel_mode()==mouse_wheel::kBindings);  // invalid: kept
+        preferences["mod.mouse-wheel"]="1";
+        env("WWHD_MOUSE_WHEEL","0");mods::set_mouse_wheel_mode(0);load_saved();assert(mods::mouse_wheel_mode()==0);  // env wins
+        const int w=writes;assert(set_mouse_wheel(mouse_wheel::kZoom)&&preferences["mod.mouse-wheel"]=="1");  // (not saved)
+        assert(writes==w+1);  // only the switch's key; the choice is not saved while WWHD_MOUSE_WHEEL is set
+        env("WWHD_MOUSE_WHEEL",nullptr);
+        env("WWHD_MOD_FIRST_PERSON","1");mods::set_mouse_wheel_mode(0);load_saved();assert(mods::mouse_wheel_mode()==0);
+        env("WWHD_MOD_FIRST_PERSON",nullptr);
+        builtin_change_permitted=false;mods::set_mouse_wheel_mode(mouse_wheel::kBindings);
+        assert(!set_mouse_wheel(mouse_wheel::kFirstPerson)&&mods::mouse_wheel_mode()==mouse_wheel::kBindings);  // a locked switch
+        assert(set_mouse_wheel(mouse_wheel::kZoom)&&mods::mouse_wheel_mode()==mouse_wheel::kZoom);  // the switch stays off: allowed
+        builtin_change_permitted=true;
+        mods::set_mouse_wheel_mode(mouse_wheel::kDefault);preferences.erase("mod.mouse-wheel");preferences.erase("mod.first-person.enabled");
+        assert(mouse_wheel::parse("zoom")==1&&mouse_wheel::parse("bindings")==2&&mouse_wheel::parse("first-person")==0&&
+               mouse_wheel::parse("x")==-1&&mouse_wheel::parse(nullptr)==-1);
+    }
     // Test isolation protects player settings even when toggles are exercised.
     env("WWHD_NO_HOST_INPUT","1");prior=reads;load_saved();assert(reads==prior);
     prior=writes;assert(set_enabled("quick-doors",true));assert(state[4]);assert(writes==prior);

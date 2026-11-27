@@ -62,7 +62,7 @@ bool handle_mouse_event(const SDL_Event& event) {
         motion::mouse_motion(event.motion.xrel, event.motion.yrel);
         if (motion::mouse_drives_gyro()) return true;
     }
-    if (event.type == SDL_EVENT_MOUSE_WHEEL && event.wheel.windowID == id && first_person_wheel()) {
+    if (event.type == SDL_EVENT_MOUSE_WHEEL && event.wheel.windowID == id && mouse_wheel_owned()) {
         float y = event.wheel.y;
         if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) y = -y;
         mouse_wheel(y); return true;

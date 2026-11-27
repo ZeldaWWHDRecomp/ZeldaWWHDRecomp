@@ -3,6 +3,7 @@
 #include "mods/achievements_host.h"
 #include "mods/manager.h"
 #include "mods/mods.h"
+#include "mods/mouse_wheel.h"
 #include "mods/climb.h"
 #include "overlay/hostui.h"
 #include "platform/process.h"
@@ -72,7 +73,12 @@ static bool camera_items = false;
 bool camera_directed_items() { return camera_items; } void set_camera_directed_items(bool b) { camera_items=b; }
 bool direct_camera() { return state[0]; } void set_direct_camera(bool b) { state[0]=b; }
 bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1]=b; }
-bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool b) { state[2]=b; }
+// the Mouse wheel choice as mods.cpp keeps it (mouse_wheel.h); state[2] mirrors First person
+static int wheel_mode = mouse_wheel::kDefault;
+int mouse_wheel_mode() { return wheel_mode; } void set_mouse_wheel_mode(int m) { wheel_mode = m; state[2] = m == mouse_wheel::kFirstPerson; }
+bool mouse_wheel_owned() { return mouse_wheel::owns_wheel(wheel_mode); }
+bool first_person_wheel() { return wheel_mode == mouse_wheel::kFirstPerson; }
+void set_first_person_wheel(bool b) { set_mouse_wheel_mode(mouse_wheel::from_switch(wheel_mode, b)); }
 bool climb_enabled() { return state[3]; } void set_climb_enabled(bool b) { state[3]=b; }
 bool quick_doors() { return state[4]; } void set_quick_doors(bool b) { state[4]=b; }
 static int door_mode_v = 0; static bool doors_by_a = false;

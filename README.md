@@ -563,8 +563,8 @@ in use. PNG screenshots remain SDR.
 
 The **Gameplay** menu has optional changes to how the game plays, all off by default: climb any
 wall (with a stamina wheel; B or A lets go), a direct right-stick camera (no easing, adjustable
-speed), a mouse camera (click the picture to capture the pointer, Esc releases it), first person
-on the mouse wheel, quick doors and fast scene changes.
+speed), a mouse camera (click the picture to capture the pointer, Esc releases it), what the mouse
+wheel does (first person, the camera's zoom or its bindings), quick doors and fast scene changes.
 It also has cheats: all items, the full-power Master Sword and Mirror Shield, 20 hearts / double
 magic / 5000 rupees, and infinite health, magic or ammo. Story cheats (all songs, Triforce shards,
 dungeon map/compass/boss key, a small key) can change or break story events, so use a spare save

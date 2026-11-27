@@ -34,5 +34,8 @@ const Entry* find(std::string_view id);
 // Headless tests neither read nor write player preferences.
 void load_saved();
 bool set_enabled(std::string_view id, bool enabled);
+// Mouse wheel (Controls > Camera, issue #696; mouse_wheel::Mode): apply and save it (main thread), with the built-in
+// mod "first-person" on exactly for First person (false: a save profile locks that switch)
+bool set_mouse_wheel(int mode);
 void disable_all();
 }  // namespace mods::manager

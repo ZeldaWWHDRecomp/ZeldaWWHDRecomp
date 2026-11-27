@@ -116,7 +116,7 @@ static bool g_script_keys[256];
 static PadState keyboard_state(bool use_host) {
     bool keys[256];
     for (int i = 0; i < 256; i++) keys[i] = (use_host && g_keys[i]) || g_script_keys[i];
-    return g_mouse_bindings.read(input_map::current(), use_host && mods::mouse_captured() && !overlay::captures(), keys, screenshot::key_down, !mods::first_person_wheel());
+    return g_mouse_bindings.read(input_map::current(), use_host && mods::mouse_captured() && !overlay::captures(), keys, screenshot::key_down, !mods::mouse_wheel_owned());
 }
 
 static input_map::AppleFaceLayout controller_face_layout(GCController* c) {

@@ -409,6 +409,12 @@ int main() {
                               "Automatic picture-in-picture: Hide keeps the song list off the TV; the PiP shortcut still shows it."})
             for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
         assert(game_settings_text::tr("Song list while conducting", 3) == "Liedliste beim Dirigieren");
+        // #696: the Camera tab's Mouse wheel choice (First person / Zoom / Bindings)
+        for (const char* w : {"Mouse wheel", "First person", "Zoom", "Bindings",
+                              "Zoom: forward brings the camera closer, back further, as the game's zoom. Bindings: Wheel up / down."})
+            for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
+        assert(game_settings_text::tr("Mouse wheel", 3) == "Mausrad" && game_settings_text::tr("Bindings", 2) == "Assignations");
+        assert(!game_settings_text::table().count("First person on R3 / wheel"));  // the old switch is gone from the page
     }
     std::puts("game_settings_page_test: ok");
 }

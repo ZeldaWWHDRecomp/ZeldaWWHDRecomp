@@ -3427,7 +3427,7 @@ void controls_prompts_page(input_map::Mapping& m) {
 
 void controls_camera_page() {
     heading("Camera controls");
-    for (const char* id : {"mouse-camera", "direct-camera", "first-person"}) {
+    for (const char* id : {"mouse-camera", "direct-camera"}) {
         const auto* entry = mods::manager::find(id);
         bool enabled = entry->enabled();
         if (ImGui::Checkbox(entry->name, &enabled)) {
@@ -3438,6 +3438,13 @@ void controls_camera_page() {
         if (enabled)
             builtin_options(id);
     }
+    // issue #696: what the mouse wheel does (mods/mouse_wheel.h; the old First-person shortcut switch is First person)
+    int wheel = mods::mouse_wheel_mode();
+    if (combo("Mouse wheel", &wheel, "First person\0Zoom\0Bindings\0"))
+        hostui::post([wheel] { mods::manager::set_mouse_wheel(wheel); });
+    help("In the game window. First person: forward enters first person, back leaves it. Zoom: forward brings the "
+         "camera closer, back further, as the right stick's zoom does in the game, with its limits; not in first "
+         "person. Bindings: the wheel is the Wheel up / Wheel down bindings (Controls > Bindings).");
     // issue #661: the right stick's up/down in the follow camera (mods/camera.cpp look_pitch; saved, applies at once)
     int pitch = mods::camera_stick_pitch() ? 1 : 0;
     if (combo("Right stick up/down", &pitch, "Zoom (original)\0Look up and down\0"))

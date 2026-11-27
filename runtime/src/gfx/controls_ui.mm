@@ -246,6 +246,7 @@ struct UIState {
 @property(strong) NSSlider* mouseFirstPerson;
 @property(strong) NSPopUpButton* stickPitch;  // Right stick up/down (#661)
 @property(strong) NSPopUpButton* zoomHold;    // Zoom while holding (#688), with Look up and down only
+@property(strong) NSPopUpButton* mouseWheel;  // Mouse wheel: First person / Zoom / Bindings (#696)
 @property(strong) NSPopUpButton* aimStick;    // First-person aiming: right / left stick (#666)
 @property(strong) NSButton* skipController;
 @property(strong) NSPopUpButton* prompts;        // in-game button prompts (#143)
@@ -1196,7 +1197,7 @@ static NSTextField* label(NSString* s) {
     ptc.toolTip = kPromptTextColoursTip;
     self.promptTextColours = ptc;
     NSMutableArray<NSButton*>* cameraButtons = [NSMutableArray array];
-    for (const char* id : {"mouse-camera", "direct-camera", "first-person"}) {
+    for (const char* id : {"mouse-camera", "direct-camera"}) {
         const auto* entry = mods::manager::find(id);
         NSButton* button = [NSButton checkboxWithTitle:ns(entry->name) target:self action:@selector(cameraChanged:)];
         button.tag = cameraButtons.count;
@@ -1204,7 +1205,16 @@ static NSTextField* label(NSString* s) {
         [cameraButtons addObject:button];
     }
     self.cameraButtons = cameraButtons;
-    NSStackView* cameras = [NSStackView stackViewWithViews:cameraButtons];
+    // issue #696: what the mouse wheel does (mods/mouse_wheel.h; the old First-person shortcut switch is First person)
+    NSPopUpButton* mouseWheel = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [mouseWheel addItemsWithTitles:@[@"First person", @"Zoom", @"Bindings"]];
+    mouseWheel.target = self;
+    mouseWheel.action = @selector(mouseWheelChanged:);
+    mouseWheel.toolTip = @"In the game window. First person: forward enters first person, back leaves it. Zoom: forward "
+                         @"brings the camera closer, back further, as the right stick's zoom in the game, with its limits. "
+                         @"Bindings: the wheel is the Wheel up / Wheel down bindings.";
+    self.mouseWheel = mouseWheel;
+    NSStackView* cameras = [NSStackView stackViewWithViews:[cameraButtons arrayByAddingObjectsFromArray:@[label(@"Mouse wheel:"), mouseWheel]]];
     cameras.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     cameras.spacing = 24;
     NSSlider* cameraSpeed = [NSSlider sliderWithValue:mods::camera_speed() minValue:.5 maxValue:2 target:self action:@selector(cameraSpeedChanged:)];
@@ -1335,9 +1345,10 @@ static NSTextField* label(NSString* s) {
     self.deadzone.doubleValue = _st.m.deadzone;
     self.deadzoneValue.stringValue = [NSString stringWithFormat:@"%.0f%%", _st.m.deadzone * 100];
     self.skipController.state = _st.m.skip_controller_selection ? NSControlStateValueOn : NSControlStateValueOff;
-    const char* ids[] = {"mouse-camera","direct-camera","first-person"};
+    const char* ids[] = {"mouse-camera","direct-camera"};
     for (NSUInteger i=0;i<self.cameraButtons.count;++i)
         self.cameraButtons[i].state = mods::manager::find(ids[i])->enabled() ? NSControlStateValueOn : NSControlStateValueOff;
+    [self.mouseWheel selectItemAtIndex:mods::mouse_wheel_mode()];
     self.cameraSpeed.doubleValue = mods::camera_speed();
     self.mouseSensitivity.doubleValue = mods::mouse_sensitivity();
     self.mouseFirstPerson.doubleValue = mods::mouse_first_person_scale();
@@ -1742,8 +1753,11 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
 }
 
 - (void)cameraChanged:(NSButton*)b {
-    const char* ids[] = {"mouse-camera","direct-camera","first-person"};
-    if (b.tag >= 0 && b.tag < 3) mods::manager::set_enabled(ids[b.tag], b.state == NSControlStateValueOn);
+    const char* ids[] = {"mouse-camera","direct-camera"};
+    if (b.tag >= 0 && b.tag < 2) mods::manager::set_enabled(ids[b.tag], b.state == NSControlStateValueOn);
+}
+- (void)mouseWheelChanged:(NSPopUpButton*)p {
+    if (!mods::manager::set_mouse_wheel((int)p.indexOfSelectedItem)) [p selectItemAtIndex:mods::mouse_wheel_mode()];
 }
 - (void)cameraSpeedChanged:(NSSlider*)s { game_settings::set_camera_speed(s.floatValue); }
 - (void)mouseSensitivityChanged:(NSSlider*)s { game_settings::set_mouse_sensitivity(s.floatValue); }

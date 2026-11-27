@@ -7,6 +7,7 @@
 #include "mods/play_context.h"
 #include "mods/camera_mouse.h"
 #include "mods/camera_zoom_hold.h"
+#include "mods/mouse_wheel.h"
 #include "platform/touch_options.h"
 #include <cassert>
 #include <cmath>
@@ -30,7 +31,7 @@ bool mouse_camera(){return enabled;} bool mouse_captured(){return captured;}
 float mouse_sensitivity(){return sensitivity;}
 float mouse_first_person_scale(){return fp_scale;}
 bool direct_camera(){return false;} bool direct_boat_speed(){return false;}
-float camera_speed(){return 1;} bool first_person_wheel(){return false;}
+float camera_speed(){return 1;} int wheel_mode=2; int mouse_wheel_mode(){return wheel_mode;}
 uint64_t step(){return clock_step;} double game_time(){return double(clock_step)/30;}
 bool trace_on(){return false;} void trace(const char*,...){}
 void link_executed(uint32_t){} void lock_on_filter_pad(input::PadState&){} void leaf_filter_pad(input::PadState&){}
@@ -58,9 +59,12 @@ std::vector<int> key_users(const Mapping&,int,int){return {};}
 bool invert_camera_y(){return inverted;}
 }
 extern "C" {
-void f_0240EBB0_orig(Cpu*){} void f_024FA9C8_orig(Cpu*){}
+void f_0240EBB0_orig(Cpu*){}
+float next_mode_value=-1,next_mode_y=-1;  // the stick nextMode saw (the wheel's wake)
+uint32_t next_mode_result=12;  // the mode nextMode returns
+void f_024FA9C8_orig(Cpu* c){next_mode_value=(float)ldf32(c->r[3]+0x178);next_mode_y=(float)ldf32(c->r[3]+0x174);c->r[3]=next_mode_result;}
 void f_0250D4E8_orig(Cpu*){} void f_0250FDC8_orig(Cpu*){} void f_025071FC_orig(Cpu*){}
-void hook_0240EBB0(Cpu*); void hook_025071FC(Cpu*);
+void hook_0240EBB0(Cpu*); void hook_025071FC(Cpu*); void hook_024FA9C8(Cpu*);
 void site_02506CEC(Cpu*); void site_02508380(Cpu*); void site_025083C4(Cpu*);
 void site_0251053C(Cpu*); void site_02510DEC(Cpu*); void site_02510448(Cpu*);
 }
@@ -264,6 +268,80 @@ int main(){
         // Off: never held
         assert(run(kOff,true,true,kL|kZL,kL|kZL,1,false,90)==(kL|kZL)&&!s.held);
     }
+    // Mouse wheel: Zoom (issue #696, mouse_wheel.h): a notch is manualCamera's full vertical rate f28 (+1: closer) for
+    // kStepsPerNotch steps, in either Right stick up/down choice; first person and the other modes never take it
+    {
+        using namespace mouse_wheel;
+        procedure(0x0,false);clock_step+=20;
+        Cpu m{};m.r[1]=kLinkBase+0x5000;stf32(m.r[1]+0x14,3.5f);
+        auto rate=[&](double r){++clock_step;m.f[28].ps0=r;site_0251053C(&m);return m.f[28].ps0;};
+        auto lat=[&](double d){m.f[1].ps0=d;m.f[2].ps0=-10;m.f[3].ps0=60;site_02510DEC(&m);return m.f[1].ps0;};
+        auto wheel=[&](float dy){mods::mouse_wheel(dy);input::PadState pad;mods::filter_pad(pad);return pad;};
+        // Bindings (the default): the camera gets nothing, nothing waits
+        assert(kDefault==kBindings&&owns_wheel(kFirstPerson)&&owns_wheel(kZoom)&&!owns_wheel(kBindings));
+        mods::wheel_mode=kBindings;wheel(1);assert(rate(0)==0&&rate(.5)==.5);
+        // Zoom: wheel up, 4 steps of the full rate, then the stick's own again
+        mods::wheel_mode=kZoom;wheel(1);
+        for(int i=0;i<4;++i) assert(rate(0)==1);
+        assert(rate(0)==0&&rate(-.3)==-.3);
+        wheel(-1);for(int i=0;i<4;++i) assert(rate(0)==-1);  // wheel down: further
+        assert(rate(0)==0);
+        // with the stick: the sum within the stick's range (no faster than the full stick); a larger mouse rate stays
+        wheel(1);assert(rate(.5)==1&&rate(-.5)==.5&&rate(1)==1);assert(rate(-3)==-2);assert(rate(0)==0);
+        // a trackpad's fractions: their share of a notch (0.1 notch: 0.4 steps of the full rate)
+        wheel(.1f);assert(std::fabs(rate(0)-.4)<1e-6&&rate(0)==0);
+        wheel(.5f);assert(rate(0)==1&&std::fabs(rate(0)-1)<1e-6&&rate(0)==0);
+        // turning the other way stops the zoom first; a fast scroll waits 4 notches at most
+        wheel(2);assert(rate(0)==1);wheel(-1);for(int i=0;i<4;++i) assert(rate(0)==-1);
+        assert(rate(0)==0);
+        wheel(10);int n=0;while(rate(0)!=0) ++n;assert(n==int(kMaxPending));
+        // Look up and down: the wheel's rate stays in f28 (the game's zoom, with its latitude part); the stick's own
+        // rate goes into the latitude only, added to the game's delta
+        look_pitch=true;
+        wheel(1);assert(rate(.7)==1&&close((float)lat(-1*3.5),-3.5f-2.45f));
+        assert(rate(0)==1&&close((float)lat(-1*3.5),-3.5f));  // the wheel alone: the game's zoom as it is
+        assert(rate(.7)==1&&close((float)lat(-3.5),-5.95f)&&rate(-1)==1&&close((float)lat(-3.5),0));
+        assert(rate(.7)==0&&close((float)lat(-0.0),-2.45f));  // over: Look up and down as before
+        zoom_held=true;wheel(1);assert(rate(.5)==1);zoom_held=false;  // Zoom while holding: the sum, as with Zoom
+        while(rate(0)!=0){}
+        look_pitch=false;
+        // nobody takes it (no manualCamera): dropped after kDropSteps steps, it does not zoom later
+        wheel(1);clock_step+=kDropSteps+1;wheel(0);assert(rate(0)==0);
+        // first person (the subject camera ran) and item aims: the wheel zooms nothing, also after
+        c.r[3]=kLinkBase;hook_025071FC(&c);wheel(1);assert(rate(0)==0);
+        clock_step+=10;procedure(0x94,false);wheel(1);procedure(0x0,false);assert(rate(0)==0);
+        // nextMode: a waiting zoom wakes the manual camera in its decision only (a stick magnitude below the stick
+        // as a button), for styles with manualCamera; a pushed stick keeps its own value
+        st32(0x10049348,1);st16(0x10049350+0x18+24,0);st32(kCamBase+0x51C,0);  // camera type 0 of 1: style 0
+        st32(0x1004487C+4,10);  // style 0: MANUAL_CAMERA
+        auto next=[&](float value){++clock_step;Cpu n{};n.r[3]=kCamBase;n.r[4]=0;stf32(kCamBase+0x178,value);stf32(kCamBase+0x174,.2f);
+                                   next_mode_value=-1;hook_024FA9C8(&n);return next_mode_value;};
+        assert(next(0)==0);                                   // nothing waits
+        wheel(1);assert(close(next(0),.45f)&&next_mode_y==0);  // woken
+        assert(ldf32(kCamBase+0x178)==0&&close((float)ldf32(kCamBase+0x174),.2f));  // put back after the decision
+        assert(close(next(.8f),.8f)&&close(next_mode_y,.2f));  // the stick pushed: as it is
+        // the camera's hold after an event (mEventFlags 0x200000): released once nextMode chose the manual camera
+        st32(kCamBase+0x510,0x200000|0x20);next_mode_result=0;next(0);assert(ld32(kCamBase+0x510)==(0x200000|0x20));
+        next_mode_result=12;next(0);assert(ld32(kCamBase+0x510)==0x20);
+        st32(0x1004487C+4,3);assert(next(0)==0);st32(0x1004487C+4,10);  // a style without manualCamera
+        while(rate(0)!=0){}
+        assert(next(0)==0);                                   // all given: no more wake
+        st32(kCamBase+0x510,0x200000);next(0);assert(ld32(kCamBase+0x510)==0x200000);  // nothing waits: the hold stays
+        // First person: the wheel is the one-step R3 press as before; it never zooms
+        mods::wheel_mode=kFirstPerson;clock_step+=20;
+        mods::mouse_wheel(1);input::PadState fp;mods::filter_pad(fp);assert(fp.buttons&input::kStickR);
+        assert(rate(0)==0);
+        mods::wheel_mode=kBindings;
+        // the pure rules: the old switch, frame_rate for true 60 (each step of a frame: the frame's rate)
+        assert(from_switch(kZoom,false)==kZoom&&from_switch(kFirstPerson,false)==kBindings&&from_switch(kBindings,true)==kFirstPerson);
+        Zoom z;add(z,1,1);
+        assert(frame_rate(z,7,1)==1&&frame_rate(z,7,1)==1&&z.pending==3);  // frame 7: two steps, one frame's rate
+        assert(frame_rate(z,8,2)==1&&z.pending==2);
+        add(z,-0.0f,3);add(z,NAN,3);assert(z.pending==2);  // nothing
+        drop_stale(z,2+kDropSteps);assert(z.pending==2);drop_stale(z,3+kDropSteps);assert(z.pending==0&&!wants(z));
+        add(z,.25f,10);assert(frame_rate(z,9,10)==1&&z.pending==0&&wants(z));  // the frame's other steps still zoom
+        assert(frame_rate(z,9,10)==1&&frame_rate(z,10,11)==0&&!wants(z));   // the next frame: over
+    }
     // First-person aiming: Left stick (classic) (issue #666): the production filter, the subject-camera hook and
     // Link's live status (gameInfo + 0x5CD8 / 0x5CDC, mapped above)
     {
@@ -304,6 +382,7 @@ int main(){
     puts("Cannon mouse: routing, gyro exclusion, priority, sensitivity, repeated reads and mode transitions PASS");
     puts("Look up and down: the vertical rate goes to the latitude alone, once per manualCamera run, off by default PASS");
     puts("Zoom while holding: the original zoom while held, L's tap on release, ZL and Off, Zoom (original) unchanged PASS");
+    puts("Mouse wheel: Zoom: a notch = 4 steps of the full rate, fractions, both stick choices, wake, hold, dropped zoom PASS");
     puts("First-person mouse look: degrees per view, once per step, ease, inversion, stale movement, mouse camera off PASS");
     puts("First-person mouse look: later reads of a step keep their movement, First-person sensitivity, 1 degree per point PASS");
 }

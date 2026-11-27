@@ -25,7 +25,7 @@ bool mouse_drives_gyro() { return gyro_mouse && aiming; }
 namespace overlay { bool captures() { return overlay_open; } }
 namespace mods {
 bool mouse_camera() { return camera; }
-bool first_person_wheel() { return wheel_enabled; }
+bool mouse_wheel_owned() { return wheel_enabled; }
 void mouse_add(float x, float y) { dx += x; dy += y; }
 void mouse_wheel(float y) { wheel += y; }
 void mouse_button(int i, bool value) { buttons[i] = value; }

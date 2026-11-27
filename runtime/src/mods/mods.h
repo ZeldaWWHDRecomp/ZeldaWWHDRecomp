@@ -40,6 +40,12 @@ void set_mouse_sensitivity(float s);
 // hookshot, boomerang, grappling hook, telescope, Picto Box)
 float mouse_first_person_scale();
 void set_mouse_first_person_scale(float s);
+// Mouse wheel (Controls > Camera, issue #696): mouse_wheel::Mode (First person, Zoom, Bindings: the default). The
+// built-in mod "first-person" (the old First-person shortcut switch) is on exactly with First person; switching it off
+// leaves Zoom alone. Saved by mods::manager::set_mouse_wheel.
+int mouse_wheel_mode();
+void set_mouse_wheel_mode(int mode);
+bool mouse_wheel_owned();  // First person or Zoom: the wheel's events go to mouse_wheel(), not to the wheel bindings
 bool first_person_wheel();
 void set_first_person_wheel(bool on);
 // One press readies and automatically uses an item against a locked enemy.
