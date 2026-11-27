@@ -12,7 +12,8 @@ namespace guestmods::settings {
 std::optional<Value> read(const std::string& key) {
     std::optional<Data> data;
     if(key=="input.face_layout") {
-        auto layout=input_map::face_layout(input_map::current());
+        // the controller in use's bindings, not the shared mapping, with a face taken by a virtual action put back
+        auto layout=input_map::recovered_face_layout(input_map::active_view(input_map::current()));
         data=std::string(layout==input_map::FaceLayout::kPosition?"position":layout==input_map::FaceLayout::kLabels?"labels":"custom");
     }else if(key=="input.controller_mode")data=std::string(input::pro_controller()?"pro":"gamepad");
     else if(key=="game.language")data=uint32_t(console_language());

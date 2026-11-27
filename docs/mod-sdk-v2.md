@@ -455,7 +455,7 @@ settings once per logic step.
 
 | Key | Type | Values |
 | --- | --- | --- |
-| `input.face_layout` | STRING | `position`, `labels`, `custom` |
+| `input.face_layout` | STRING | `position`, `labels`, `custom`: the face layout of the bindings the controller in use plays with, with a face taken by Jump anywhere, the moon jump or Slow walk put back. Not the prompt glyph family (Xbox letters, PlayStation or GameCube art), which the Prompts setting chooses |
 | `input.controller_mode` | STRING | `gamepad`, `pro` |
 | `game.language` | U32 | Wii U language code 0–11 in use (set at startup) |
 | `game.build` | STRING | `USA`, `EU` |
@@ -469,7 +469,7 @@ settings once per logic step.
 ```c
 static char layout[16];
 if (wwhd_setting_get("input.face_layout", WWHD_SETTING_STRING, layout, sizeof layout)) {
-    /* layout holds the current preset name */
+    /* layout holds "position", "labels" or "custom" */
 }
 ```
 
