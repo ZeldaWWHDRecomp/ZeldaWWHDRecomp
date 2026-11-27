@@ -2596,6 +2596,13 @@ target_include_directories(guest_settings_test PRIVATE runtime/src)
 target_compile_options(guest_settings_test PRIVATE -UNDEBUG)
 add_test(NAME guest_settings COMMAND guest_settings_test)
 
+add_executable(guest_settings_read_test runtime/tools/guest_settings_read_test.cpp
+    runtime/src/mods/guest_settings.cpp runtime/src/input_map.cpp runtime/src/guest_addr_identity.c)
+target_include_directories(guest_settings_read_test PRIVATE runtime/include runtime/src)
+target_compile_options(guest_settings_read_test PRIVATE -UNDEBUG)
+target_link_libraries(guest_settings_read_test PRIVATE Threads::Threads)
+add_test(NAME guest_settings_read COMMAND guest_settings_read_test)
+
 add_executable(setup_test_plan_test runtime/tools/setup_test_plan_test.cpp)
 target_include_directories(setup_test_plan_test PRIVATE runtime/src)
 target_compile_options(setup_test_plan_test PRIVATE -UNDEBUG)
