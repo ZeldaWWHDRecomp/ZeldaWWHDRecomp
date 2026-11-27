@@ -166,6 +166,13 @@ inline const std::unordered_map<std::string, Line>& table() {
           "Nella schermata del titolo, scegli automaticamente il controller Wii U impostato.",
           "En la pantalla de título, elegir automáticamente el mando de Wii U configurado."}},
         // screen
+        {"Song list while conducting", {"Liste des chants à la baguette", "Liedliste beim Dirigieren", "Elenco melodie mentre dirigi", "Lista de canciones al dirigir"}},
+        {"Automatic picture-in-picture: Hide keeps the song list off the TV; the PiP shortcut still shows it.",
+         {"Incrustation automatique : Masquer garde la liste des chants hors de la TV ; le raccourci d'incrustation l'affiche toujours.",
+          "Automatisches Bild-im-Bild: Ausblenden hält die Liedliste vom Fernseher fern; das Bild-im-Bild-Kürzel zeigt sie weiterhin.",
+          "Picture-in-picture automatico: Nascondi tiene l'elenco delle melodie fuori dalla TV; la scorciatoia PiP lo mostra ancora.",
+          "Imagen en imagen automática: Ocultar quita la lista de canciones de la TV; el atajo de imagen en imagen aún la muestra."}},
+        {"Show", {"Afficher", "Anzeigen", "Mostra", "Mostrar"}},
         {"Gameplay field of view", {"Champ de vision en jeu", "Sichtfeld im Spiel", "Campo visivo in gioco", "Campo de visión en el juego"}},
         {"100% is the original. Wider shows more of the world; cutscenes keep theirs.",
          {"100 % est l'original. Plus large montre plus du monde ; les cinématiques gardent le leur.",

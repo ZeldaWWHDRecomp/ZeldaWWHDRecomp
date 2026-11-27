@@ -404,6 +404,11 @@ int main() {
                               "A multiplier of the mouse sensitivity in first person and when aiming only (1.00x: the same as on foot)."})
             for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
         assert(game_settings_text::tr("First-person sensitivity", 3) == "Empfindlichkeit Ich-Perspektive");
+        // #694: the Screen tab's Song list while conducting (Automatic picture-in-picture)
+        for (const char* w : {"Song list while conducting", "Show", "Hide",
+                              "Automatic picture-in-picture: Hide keeps the song list off the TV; the PiP shortcut still shows it."})
+            for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
+        assert(game_settings_text::tr("Song list while conducting", 3) == "Liedliste beim Dirigieren");
     }
     std::puts("game_settings_page_test: ok");
 }

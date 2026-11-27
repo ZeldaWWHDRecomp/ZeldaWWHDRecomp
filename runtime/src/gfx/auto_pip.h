@@ -101,15 +101,31 @@ inline bool gamepad_baton_state(uint32_t descriptor, bool metronome, uint32_t co
 inline bool gamepad_switch_state(uint32_t descriptor) {
     return gamepad_scene_kind(descriptor) == GamePadSceneKind::Switch;
 }
+// Display > GamePad screen > Song list while conducting (#694): with Show (song_list, the default) the song list
+// opens picture-in-picture like a menu; with Hide only the menus do, and the PiP shortcut peeks at the song list
+// (peek): shown until the shortcut hides it again or Link stops conducting. A pin set before conducting stays a pin.
+inline bool auto_pip_peek_lasts(GamePadUiState state) {
+    return state.available && state.baton && !state.off_tv && !state.switching;
+}
 struct AutoPipDecision {
     double until = 0;
-    void update(GamePadUiState state, double now) {
+    void update(GamePadUiState state, double now, bool song_list = true) {
         if (!state.available || state.off_tv || state.switching) until = 0;
-        else if (state.menu || state.baton) until = now + 0.25;
+        else if (state.menu || (song_list && state.baton)) until = now + 0.25;
     }
-    bool shown(GamePadUiState state, bool pin, double now) const {
+    bool shown(GamePadUiState state, bool pin, double now, bool song_list = true, bool peek = false) const {
         return !state.off_tv && !state.switching &&
-            (pin || (state.available && (state.menu || state.baton || now < until)));
+            (pin || (peek && auto_pip_peek_lasts(state)) ||
+             (state.available && (state.menu || (song_list && state.baton) || now < until)));
     }
 };
+// The PiP shortcut in auto: the control's state (pinned or peeking) and what pressing it does. With Hide, a press
+// while Link conducts and nothing is pinned starts a peek instead of a pin, so the picture does not stay up
+// after the song; any press while pinned or peeking clears both.
+struct AutoPipToggle { bool pin, peek; };
+inline AutoPipToggle auto_pip_show(bool on, bool pin, GamePadUiState state, bool song_list) {
+    if (!on) return {false, false};
+    if (!song_list && !pin && auto_pip_peek_lasts(state)) return {false, true};
+    return {true, false};
+}
 } // namespace gfx

@@ -44,8 +44,9 @@ same values.
 - **Controls:** face buttons, button prompts, shoulder names, face button colours (Off / Xbox / GameCube;
   `controls.prompt-colours`, a choice whose values 0 and 1 are the former toggle's off and on) and coloured face
   button text, rumble, stick dead zone, slow walk speed (#626), skip controller selection.
-- **Screen:** gameplay field of view, the boost bar. On Android also the touch buttons and the
-  on-screen controls.
+- **Screen:** gameplay field of view, the boost bar, song list while conducting (Show / Hide;
+  `screen.auto-pip-song-list`, #694, dimmed unless the GamePad screen is Automatic picture-in-picture).
+  On Android also the touch buttons and the on-screen controls.
 - **Graphics:** internal resolution, frame rate (30, 40, 60, 120 or 240 fps), dynamic
   resolution, bloom, edge smoothing (FXAA), sharper text, anisotropic filtering, clouds, cloud shadows and
   full-size torchlight. They apply at once. The rest (renderer, aspect ratio, HDR, ambient occlusion

@@ -48,6 +48,7 @@
 #include "../mods/fast_forward.h"
 #include "display.h"
 #include "display_modes.h"
+#include "auto_pip_options.h"
 #include "headless_compose.h"
 #include "gx2/gx2.h"
 #include "input.h"
@@ -1242,6 +1243,7 @@ bool drc_overlay_hit(void* window, double wx, double wy) {
 - (void)setFilter:(NSMenuItem*)item { gfx::g_filter = (int)item.tag; gfx::save_options(); }
 - (void)setMode:(NSMenuItem*)item { gfx::set_drc_mode((int)item.tag); }
 - (void)toggleDrc:(NSMenuItem*)item { gfx::toggle_drc_screen(); }
+- (void)toggleSongList:(NSMenuItem*)item { gfx::auto_pip_options::set_option(!gfx::g_auto_song_list); }
 - (void)setAnchor:(NSMenuItem*)item { gfx::g_pip_anchor = (int)item.tag; gfx::save_options(); }
 - (void)setSize:(NSMenuItem*)item { gfx::g_pip_size = gfx::pip_clamp_size(item.tag / 100.0f); gfx::save_options(); }
 - (void)setOpacity:(NSMenuItem*)item { gfx::g_pip_opacity = gfx::pip_clamp_opacity(item.tag / 100.0f); gfx::save_options(); }
@@ -1282,6 +1284,10 @@ bool drc_overlay_hit(void* window, double wx, double wy) {
         item.title = gfx::g_mode == gfx::kDrcAuto ? @"Pin GamePad Picture-in-Picture" : @"Show GamePad Screen";
         on(gfx::drc_window_shown());
         return gfx::g_mode != gfx::kDrcOff && gfx::drc_window_available();
+    }
+    if (a == @selector(toggleSongList:)) {  // #694: Automatic only
+        on(gfx::g_auto_song_list);
+        return gfx::g_mode == gfx::kDrcAuto;
     }
     if (a == @selector(setAnchor:)) on(gfx::g_pip_anchor == item.tag);
     if (a == @selector(setSize:)) on(fabsf(gfx::g_pip_size * 100 - item.tag) < 0.5f);
@@ -1334,6 +1340,8 @@ void install_display_menu(NSMenu* bar) {
     add(m, @"    Picture-in-picture in the TV window", @selector(setMode:), kDrcPip).toolTip = @"Click the overlay to touch";
     add(m, @"    Automatic picture-in-picture", @selector(setMode:), kDrcAuto).toolTip =
         @"Shows GamePad menus and the Wind Waker song list while open; follows Off-TV Play. Cmd+G pins the overlay";
+    add(m, @"        Song list while conducting", @selector(toggleSongList:)).toolTip =
+        @"Automatic: the Wind Waker song list in picture-in-picture while Link conducts. Off: only menus open it; Cmd+G shows or hides it while you conduct";
     add(m, @"    Off", @selector(setMode:), kDrcOff).toolTip = @"Not shown; the game keeps drawing it";
     add(m, @"    GamePad only", @selector(setMode:), kDrcGamePad).toolTip =
         @"Only the GamePad picture in the TV window (click it to touch); in the game, Minus switches to Off-TV Play";

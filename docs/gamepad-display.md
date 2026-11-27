@@ -6,7 +6,7 @@ Choose a mode in Display → GamePad screen (or set `WWHD_DRC_MODE` for one laun
 | --- | --- |
 | `window` | GamePad picture in a separate window. If that display is unavailable, it appears in the TV window. |
 | `pip` | GamePad picture in a corner of the TV window. |
-| `auto` | GamePad menus, and the song list while Link conducts with the Wind Waker, appear in PiP while open and disappear about 250 ms after closing. The game’s Off-TV Play switches the main picture to the GamePad; returning to TV restores automatic menus. |
+| `auto` | GamePad menus, and the song list while Link conducts with the Wind Waker (unless *Song list while conducting* is Hide), appear in PiP while open and disappear about 250 ms after closing. The game’s Off-TV Play switches the main picture to the GamePad; returning to TV restores automatic menus. |
 | `off` | GamePad picture hidden; the game continues drawing it. |
 | `gamepad` | GamePad picture fills the main window. Use the game’s Minus button for Off-TV Play. |
 
@@ -14,7 +14,7 @@ Auto follows the game’s item, collection/pause, map/sea-chart, bag and prompt 
 and ordinary cutscenes do not open PiP. Menus routed to the TV in Pro Controller mode do not open it
 on the GamePad. The port only reads this state and does not open, close or alter the game’s menus.
 
-Cmd+G (Ctrl+G with the SDL host) toggles the **pin** in auto, including while a menu is already open.
+Cmd+G (Ctrl+G with the SDL host), or the **GamePad picture-in-picture** shortcut, toggles the **pin** in auto, including while a menu is already open.
 The pin keeps PiP visible after closing a menu. During an Off-TV transition the pin is retained;
 the full-size GamePad picture takes precedence until the game returns to TV. In other modes the
 shortcut keeps its usual show/hide behavior. PiP corner, size, opacity and touch mapping are shared
@@ -27,6 +27,30 @@ If you turn the option on yourself, the game starts in Off-TV Play as on a one-s
 
 An iPhone with a controller attached can also be the GamePad: it shows the GamePad picture, and its
 controller, touch screen and gyro drive the game. See [ios/README.md](../ios/README.md).
+
+## Song list while conducting
+
+**Settings → Display → GamePad screen → Song list while conducting: Show / Hide** (also on the item menu's
+Screen settings page, and as a check mark in the macOS Display menu) decides whether Automatic opens PiP while Link
+conducts with the Wind Waker. **Show** (the default) is the behaviour above. With **Hide** the menus
+(items, map, pause/collection, bag, prompts) still open PiP, but conducting does not, so the song list
+no longer covers the main picture while you learn or play a song. The choice is saved;
+`WWHD_AUTO_PIP_BATON=0` (Hide) or `1` (Show) overrides it for one launch. Mods can read it as
+`settings.screen.auto-pip-song-list` (0 Show, 1 Hide).
+
+With Hide, the PiP shortcut (Cmd+G / Ctrl+G, or the controller combination or key bound to
+**GamePad picture-in-picture** in Settings → Shortcuts) shows the song list while Link conducts, and
+pressing it again hides it. This is a short look rather than a pin: it ends when Link stops
+conducting, so PiP does not stay open after the song. A pin you set before conducting still stays a
+pin. It shows the song list throughout, stays after the song, and the shortcut clears it. The
+*Pin GamePad picture-in-picture* box in Settings works the same way as the shortcut. In Show, the
+shortcut pins as before.
+
+The option only applies to the picture-in-picture of Automatic. A separate GamePad window, an
+Android second screen and the other views keep showing the GamePad picture, song list included,
+as the GamePad itself would: there the song list does not cover the main picture. Pro Controller
+mode and Off-TV Play are unchanged: conducting never opens PiP with the Pro Controller, and in
+Off-TV Play the GamePad picture is the main picture anyway. Start (Plus) stays the game's pause menu.
 
 ## Picture-in-picture placement
 
@@ -101,7 +125,9 @@ below are canonical USA addresses and are translated through `GD()` for regional
 - Wind Waker: play object `1046F0B0` (`dComIfGp_get`) byte `+5BD1` is the metronome flag that
   `daPy_lk_c::procTactWait_init` (`023E92A0`) sets while Link conducts and the song's end or a
   cancel clears; scene descriptors `1049EDB8/1049EDE4` are the GamePad song list opening and open
-  (it trails the flag by a few frames on both ends). Either one shows PiP with GamePad routing `1`.
+  (it trails the flag by a few frames on both ends). Either one shows PiP with GamePad routing `1`,
+  unless *Song list while conducting* is Hide; then the same state only limits how long the
+  shortcut's look at the song list lasts.
 - `1049F498`, `1049F4C4`, `1049F4F0` identify TV, DRC and Pro mode exchanges. These clear the closing
   delay and suppress PiP while routing changes; the pin survives.
 - Game Over reuses the save/options window (`1049ED08`/`1049ED34`) with routing `4`: the TV shows it

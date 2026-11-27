@@ -20,6 +20,16 @@ what is on `devel` and not released yet (also in the
 
 ### New
 
+- **Automatic picture-in-picture: Song list while conducting: Show / Hide** (#694, thanks @Outlander87). With
+  **Display › GamePad screen** set to Automatic, the Wind Waker's song list used to open picture-in-picture while
+  Link conducts, which can cover the main picture at large sizes. The new option **Song list while conducting**
+  (under the View choice in Settings › Display, on the item menu's Screen settings page and in the macOS Display
+  menu) keeps it closed with *Hide*: menus still open picture-in-picture, conducting doesn't. The picture-in-picture
+  shortcut (Cmd+G / Ctrl+G, or a controller combination set in Settings › Shortcuts) still shows the song list
+  while you conduct and hides it again; that look ends with the song, so nothing stays open afterwards. *Show* is
+  the default and keeps the current behaviour. Saved (`WWHD_AUTO_PIP_BATON=0/1` for a run). Also: the
+  **GamePad picture-in-picture** shortcut bound in Settings › Shortcuts now pins in Automatic as Cmd+G does,
+  instead of switching the view to plain picture-in-picture.
 - **Look up and down: zoom while holding L** (#688, thanks @stonerbong42069). With **Right stick up/down: Look up
   and down**, holding a button switches the right stick back to the original zoom while it is held: **Zoom while
   holding** in **Settings › Controls › Camera**, right under it. *L* (L1 / LB, Q on the keyboard: the Wii U's L
