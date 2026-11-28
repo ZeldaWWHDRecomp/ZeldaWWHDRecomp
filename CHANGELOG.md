@@ -108,6 +108,13 @@ what is on `devel` and not released yet (also in the
 
 ### Fixed
 
+- **Setup's model preparation no longer skips `Vtil:vtil1.bdl` or another object's model** (#703, thanks
+  @radialmonster). When the title's story intro came while the preparation was drawing an object's models, it put the
+  object aside, released it and tried it again after the intro. The released object was still listed in the game's
+  resource table storage, which the preparation looked objects up in, so it took the object for one the game still
+  held and later drew its models from memory that had been freed: an access violation in the model drawing,
+  `Vtil:vtil1.bdl` in a Windows run. The preparation now looks objects up only among the ones the game holds, so an
+  object put aside for the intro is loaded again and drawn as usual. Play itself is unchanged.
 - **Setup's model preparation no longer skips actors it does not need to** (#697, thanks @radialmonster). Setup
   prepares the actors' models by showing each one at the title screen, one after the other. Three of them stopped it,
   though none was at fault: `Hsh2` ("indirect branch to unknown address 00300000"), `Bms2` (an access violation) and
