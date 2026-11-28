@@ -1,5 +1,6 @@
 #include "platform/hid_gamepad.h"
 #include "input_map.h"
+#include "platform/gc_adapter_hid.h"
 
 #include <algorithm>
 
@@ -20,6 +21,8 @@ bool steam_virtual_pad(bool virtual_device, uint16_t vendor, uint16_t product, s
 
 Admission admit(const DeviceIdentity& d) {
     if (steam_virtual_pad(d.virtual_device, d.vendor, d.product, d.product_name)) return Admission::kSteamVirtual;
+    if (!d.virtual_device && !d.gc_synthetic && gc_adapter_hid::pc_mode_adapter(d.vendor, d.product))
+        return Admission::kGameCubeAdapter;
     if (d.gc_synthetic) return Admission::kGameControllerSynthetic;
     if (d.gc_supported) return Admission::kGameControllerSupported;
     return Admission::kUnsupported;
@@ -28,6 +31,7 @@ Admission admit(const DeviceIdentity& d) {
 const char* ignore_reason(Admission a) {
     switch (a) {
         case Admission::kSteamVirtual: return "";
+        case Admission::kGameCubeAdapter: return "";
         case Admission::kGameControllerSynthetic: return "GameController synthetic device; read through GameController";
         case Admission::kGameControllerSupported: return "GameController supports it; read through GameController";
         case Admission::kUnsupported: return "not Steam Input's virtual pad; no mapping for this device";

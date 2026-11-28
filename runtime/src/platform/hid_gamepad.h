@@ -31,9 +31,14 @@ bool steam_virtual_pad(bool virtual_device, uint16_t vendor, uint16_t product, s
 // GCController. Everything else GameController supports or synthesised stays with
 // GameController, and unknown physical and virtual devices (joysticks, flight sticks, 3D mice)
 // cannot safely use this fixed Xbox mapping, even if their axes/buttons look similar.
-enum class Admission : uint8_t { kSteamVirtual, kGameControllerSynthetic, kGameControllerSupported, kUnsupported };
+// A PC-mode GameCube adapter (0079:1843/1844/1846, gc_adapter_hid.h) is admitted before them as
+// well: GameController supports it but only as a bare HID pad with the wrong layout (issue #556),
+// so it is read from its own reports and its GCController is set aside (gc_adapter_hid::shadows).
+enum class Admission : uint8_t {
+    kSteamVirtual, kGameCubeAdapter, kGameControllerSynthetic, kGameControllerSupported, kUnsupported,
+};
 Admission admit(const DeviceIdentity& d);
-// The reason logged when a device is ignored (empty for kSteamVirtual).
+// The reason logged when a device is ignored (empty for the admitted kinds).
 const char* ignore_reason(Admission a);
 
 // What one HID element feeds. Stick axes are signed (centred at 0), the triggers are 0..1, and a

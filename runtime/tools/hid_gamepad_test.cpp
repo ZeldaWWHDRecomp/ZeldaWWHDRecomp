@@ -77,6 +77,26 @@ static void test_admission() {
             CHECK(hid_gamepad::admit(d) == Admission::kUnsupported);
         }
     }
+    // PC-mode GameCube adapters (issue #556): read from their reports even though GameController
+    // supports them (as a bare HID pad with the wrong layout); Nintendo's WUP-028 is not one.
+    for (uint16_t product : {0x1843, 0x1844, 0x1846}) {
+        hid_gamepad::DeviceIdentity gc;
+        gc.vendor = 0x0079; gc.product = product; gc.product_name = "GameCube Controller Adapter"; gc.gc_supported = true;
+        CHECK(hid_gamepad::admit(gc) == Admission::kGameCubeAdapter);
+        gc.gc_supported = false;
+        CHECK(hid_gamepad::admit(gc) == Admission::kGameCubeAdapter);
+        gc.virtual_device = true;  // a software device with its IDs is not the adapter
+        CHECK(hid_gamepad::admit(gc) == Admission::kUnsupported);
+        gc.virtual_device = false; gc.gc_synthetic = true;
+        CHECK(hid_gamepad::admit(gc) == Admission::kGameControllerSynthetic);
+    }
+    hid_gamepad::DeviceIdentity wup;
+    wup.vendor = 0x057E; wup.product = 0x0337; wup.gc_supported = true;
+    CHECK(hid_gamepad::admit(wup) == Admission::kGameControllerSupported);
+    hid_gamepad::DeviceIdentity dragonrise;  // another DragonRise product: not an adapter
+    dragonrise.vendor = 0x0079; dragonrise.product = 0x0006;
+    CHECK(hid_gamepad::admit(dragonrise) == Admission::kUnsupported);
+    CHECK(hid_gamepad::ignore_reason(Admission::kGameCubeAdapter)[0] == 0);
     CHECK(hid_gamepad::ignore_reason(Admission::kUnsupported)[0] != 0);
     CHECK(hid_gamepad::ignore_reason(Admission::kGameControllerSupported)[0] != 0);
     CHECK(hid_gamepad::ignore_reason(Admission::kGameControllerSynthetic)[0] != 0);

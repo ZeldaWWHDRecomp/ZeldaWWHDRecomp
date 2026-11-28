@@ -11,6 +11,29 @@ The adapter needs the WinUSB driver, the same one Dolphin uses: install it with
 [Zadig](https://zadig.akeo.ie/) for the device "WUP-028" (USB ID 057E 0337). Windows' own driver
 for the adapter isn't supported. If the adapter already works in Dolphin, nothing else is needed.
 
+## PC-mode adapters on macOS
+
+PC-mode GameCube adapters (Mayflash-style, often named "GameCube Controller Adapter", USB ID 0079 1843,
+1844 or 1846; set a Mayflash adapter's switch to PC mode) are read directly on the Mac, in the layout SDL uses
+for them: GameCube A, B, X, Y, Z, Start and the D-pad, both sticks over their full range, analog L and R and
+their clicks. macOS's own GameController description of these adapters has the wrong buttons and stick ranges
+(issue #556), so the game leaves it out. Each adapter port in use is a controller of its own, listed as
+"GameCube Controller Adapter (port 1)" and so on, and gets the GameCube layout below automatically.
+
+The sticks calibrate themselves: the centre is where a stick rests when the adapter starts reporting, so
+leave the sticks and triggers alone while plugging it in; a stick that reaches further than usual
+widens its range the first time it does. Nintendo's own adapter (WUP-028) isn't read this way on the Mac.
+
+To check what an adapter reports, turn on **Settings › Graphics › Bug reports › Write a log file**, quit
+the game, plug in the adapter and start the game from Terminal with `WWHD_HID_DUMP=1`:
+
+```sh
+open -a "Wind Waker HD" --env WWHD_HID_DUMP=1
+```
+
+The log (`captures/wwhd.log`) then lists the adapter's HID elements once (usage page, usage, logical range)
+and its raw reports and element values as they change, a few lines a second at most.
+
 ## Main controls
 
 | GameCube control | In-game action |
