@@ -108,6 +108,17 @@ what is on `devel` and not released yet (also in the
 
 ### Fixed
 
+- **PC-mode GameCube adapters work on the Mac with their real layout** (#556, thanks @zeldafan2000). macOS describes
+  these adapters (Mayflash-style, USB ID 0079 1843/1844/1846, "GameCube Controller Adapter") only as a generic
+  controller, and the game read that description: the C-stick ran backwards, the control stick moved Link at a crawl
+  (its range was read wrong), the face buttons were mixed up and L/R did nothing. The game now reads these adapters
+  directly, in the layout SDL uses for them: A, B, X, Y, Z, Start and the D-pad as printed, both sticks over their
+  full range (centred where they rest when the adapter starts, reaching full deflection), analog L/R with their
+  clicks, and each port in use as a controller of its own ("GameCube Controller Adapter (port 1)", with the GameCube
+  layout set up automatically). macOS's generic copy is left out so nothing is read twice. Bindings you made for the
+  generic "GameCube Controller Adapter" are kept but no longer used. `WWHD_HID_DUMP=1` logs what a HID controller
+  reports (its elements once, raw values as they change) for bug reports; see
+  [GameCube controller](docs/gamecube-controller.md#pc-mode-adapters-on-macos).
 - **Setup's model preparation no longer skips `Vtil:vtil1.bdl` or another object's model** (#703, thanks
   @radialmonster). When the title's story intro came while the preparation was drawing an object's models, it put the
   object aside, released it and tried it again after the intro. The released object was still listed in the game's

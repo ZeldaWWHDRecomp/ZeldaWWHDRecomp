@@ -54,6 +54,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #ifdef WWHD_HAS_IOKIT
 #import <IOKit/hid/IOHIDManager.h>
 #import <IOKit/hid/IOHIDKeys.h>
+#include "platform/gc_adapter_hid.h"
 #include "platform/hid_gamepad.h"
 #endif
 
@@ -234,6 +235,12 @@ static std::string pad_name(GCController* c);
 // per-device pad positions as the GCController pads; a pad GameController supports is skipped (see
 // io_add), so nothing is read twice. The mapping lives in platform/hid_gamepad.h so it is testable.
 //
+// PC-mode GameCube adapters (0079:1843/1844/1846, issue #556) are read here too, from their raw input
+// reports in SDL's layout (platform/gc_adapter_hid.h), one pad per adapter port: GameController
+// supports them only as a bare HID pad with the wrong buttons and stick ranges, so that GCController
+// is left out (io_shadowed) and the adapter is not read twice. WWHD_HID_DUMP=1 logs each matched
+// device's HID elements once and its raw values on change, for reports from hardware we don't have.
+//
 // Values arrive through the input-value callback, and the whole reader runs on the main run loop
 // (the manager is scheduled there, the pad is polled from the main-thread timer), so no lock is
 // needed for the pads.
@@ -248,6 +255,16 @@ struct IokitPad {
     hid_gamepad::Hat hat;
     bool input_seen = false;
     bool virtualPad = false;               // "HIDVirtualDevice": a software pad that may duplicate a real one
+    // PC-mode GameCube adapter (issue #556): read from its input reports, one pad per port
+    bool gc_adapter = false;
+    std::string product_name;              // the HID product string as it is (GameController names its pad so)
+    gc_adapter_hid::Adapter gc;
+    std::vector<uint8_t> report;           // the input report buffer IOKit fills
+    bool odd_report_logged = false;
+    // WWHD_HID_DUMP
+    std::vector<uint8_t> dumped;           // the report last logged
+    gc_adapter_hid::DumpLimiter dump_reports, dump_values{0, 3000};
+    std::map<uint32_t, long> dumped_values;  // per element cookie: the value last logged
 };
 static std::vector<IokitPad*> g_io_pads;
 static IOHIDManagerRef g_io_manager = nullptr;  // process lifetime: the reader lives until the app exits
@@ -259,8 +276,65 @@ static bool steam_controller(GCController* c) {
     return [name containsString:@"steam controller"];
 }
 
+static bool hid_dump() {
+    static const bool on = [] { const char* v = getenv("WWHD_HID_DUMP"); return v && *v && strcmp(v, "0"); }();
+    return on;
+}
+static uint64_t now_ms() { return uint64_t(CACurrentMediaTime() * 1000.0); }
+static const char* element_type(IOHIDElementType t) {
+    switch (t) {
+        case kIOHIDElementTypeInput_Misc: return "misc";
+        case kIOHIDElementTypeInput_Button: return "button";
+        case kIOHIDElementTypeInput_Axis: return "axis";
+        case kIOHIDElementTypeInput_ScanCodes: return "scancodes";
+        case kIOHIDElementTypeOutput: return "output";
+        case kIOHIDElementTypeFeature: return "feature";
+        case kIOHIDElementTypeCollection: return "collection";
+        default: return "other";
+    }
+}
+// WWHD_HID_DUMP: every element of one matched device, once (usage page/usage, logical range, which report)
+static void io_dump_elements(IOHIDDeviceRef dev, const std::string& name, int vendor, int product) {
+    long max_report = 0;
+    if (CFNumberRef n = (CFNumberRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDMaxInputReportSizeKey))) CFNumberGetValue(n, kCFNumberLongType, &max_report);
+    CFArrayRef els = IOHIDDeviceCopyMatchingElements(dev, nullptr, 0);
+    LOG("[input] HID dump: \"%s\" vendor %04X product %04X, max input report %ld bytes, %ld elements", name.c_str(),
+        vendor, product, max_report, els ? (long)CFArrayGetCount(els) : 0L);
+    if (!els) return;
+    for (CFIndex i = 0; i < CFArrayGetCount(els); i++) {
+        IOHIDElementRef e = (IOHIDElementRef)CFArrayGetValueAtIndex(els, i);
+        LOG("[input] HID dump element %ld: %s page 0x%02X usage 0x%02X logical %ld..%ld report ID %u, %u x %u bits, cookie %u",
+            (long)i, element_type(IOHIDElementGetType(e)), (unsigned)IOHIDElementGetUsagePage(e), (unsigned)IOHIDElementGetUsage(e),
+            (long)IOHIDElementGetLogicalMin(e), (long)IOHIDElementGetLogicalMax(e), (unsigned)IOHIDElementGetReportID(e),
+            (unsigned)IOHIDElementGetReportCount(e), (unsigned)IOHIDElementGetReportSize(e), (unsigned)IOHIDElementGetCookie(e));
+    }
+    CFRelease(els);
+}
+// WWHD_HID_DUMP: one element's new value (IOKit reports changes only): every button change, an axis
+// once it moved 8 counts from the value last logged or reached an end of its range; 3000 lines at most
+static void io_dump_value(IokitPad* p, IOHIDValueRef value) {
+    if (!hid_dump()) return;
+    IOHIDElementRef e = IOHIDValueGetElement(value);
+    const long v = (long)IOHIDValueGetIntegerValue(value);
+    const long mn = (long)IOHIDElementGetLogicalMin(e), mx = (long)IOHIDElementGetLogicalMax(e);
+    const auto [it, first] = p->dumped_values.try_emplace((uint32_t)IOHIDElementGetCookie(e), v);
+    if (!first) {
+        const bool small = mx - mn > 1 && std::labs(v - it->second) < 8 && v != mn && v != mx;
+        if (v == it->second || small) return;
+        it->second = v;
+    }
+    if (!p->dump_values.allow(now_ms())) return;
+    LOG("[input] HID dump value: %s page 0x%02X usage 0x%02X (cookie %u) = %ld (logical %ld..%ld)%s", p->name.c_str(),
+        (unsigned)IOHIDElementGetUsagePage(e), (unsigned)IOHIDElementGetUsage(e), (unsigned)IOHIDElementGetCookie(e), v, mn, mx,
+        p->dump_values.exhausted() ? " (dump limit reached)" : "");
+}
+static void io_dump_value_cb(void* ctx, IOReturn r, void*, IOHIDValueRef value) {
+    if (r == kIOReturnSuccess && value) io_dump_value((IokitPad*)ctx, value);
+}
+
 static void io_value(void* ctx, IOReturn r, void* sender, IOHIDValueRef value) {
     if (r != kIOReturnSuccess || !value) return;
+    io_dump_value((IokitPad*)ctx, value);
     IOHIDElementRef e = IOHIDValueGetElement(value);
     const IOHIDElementType type = IOHIDElementGetType(e);
     if (type < kIOHIDElementTypeInput_Misc || type > kIOHIDElementTypeInput_ScanCodes) return;
@@ -295,6 +369,72 @@ static std::string io_string(IOHIDDeviceRef dev, CFStringRef key) {
         CFStringGetCString((CFStringRef)s, buf, sizeof buf, kCFStringEncodingUTF8);
     return buf;
 }
+static std::string io_port_name(const IokitPad* p, int port) {
+    return p->name + " (port " + std::to_string(port + 1) + ")";
+}
+// one adapter report (the report ID byte first when the descriptor numbers them): the port it is for
+static void io_report(void* ctx, IOReturn r, void*, IOHIDReportType, uint32_t report_id, uint8_t* report, CFIndex len) {
+    if (r != kIOReturnSuccess || !report || len <= 0) return;
+    IokitPad* p = (IokitPad*)ctx;
+    bool changed = false;
+    const int port = p->gc.feed(report, (size_t)len, &changed);
+    if (hid_dump() && !(p->dumped.size() == (size_t)len && std::equal(p->dumped.begin(), p->dumped.end(), report)) &&
+        p->dump_reports.allow(now_ms())) {
+        p->dumped.assign(report, report + len);
+        LOG("[input] HID dump report: %s ID %u, %ld bytes: %s -> %s%s", p->name.c_str(), (unsigned)report_id, (long)len,
+            gc_adapter_hid::hex(report, (size_t)len).c_str(),
+            port < 0 ? "not a pad report" : ("port " + std::to_string(port + 1) + ": " + gc_adapter_hid::describe(p->gc.ports[port].raw)).c_str(),
+            p->dump_reports.exhausted() ? " (dump limit reached)" : "");
+    }
+    if (port < 0) {
+        if (!p->odd_report_logged)
+            LOG("[input] GameCube adapter: a %ld-byte report (ID %u) is not a pad report this reader knows; "
+                "WWHD_HID_DUMP=1 logs it", (long)len, (unsigned)report_id);
+        p->odd_report_logged = true;
+        return;
+    }
+    if (changed) {
+        LOG("[input] GameCube adapter %s: %s", p->gc.ports[port].listed(port) ? "controller connected" : "controller disconnected",
+            io_port_name(p, port).c_str());
+        note_dominant_labels();
+    }
+}
+// A PC-mode GameCube adapter (issue #556): read from its reports, in the layout SDL reads it with
+static void io_add_gc_adapter(IOHIDDeviceRef dev, const std::string& name, const std::string& maker, int v, int pr) {
+    // the axes' byte encoding from the descriptor's stick X element (0..255 on the adapters SDL knows)
+    gc_adapter_hid::AxisRange range;
+    if (CFArrayRef els = IOHIDDeviceCopyMatchingElements(dev, nullptr, 0)) {
+        for (CFIndex i = 0; i < CFArrayGetCount(els); i++) {
+            IOHIDElementRef e = (IOHIDElementRef)CFArrayGetValueAtIndex(els, i);
+            if (IOHIDElementGetUsagePage(e) == 0x01 && IOHIDElementGetUsage(e) == 0x30) {
+                range = gc_adapter_hid::axis_range((long)IOHIDElementGetLogicalMin(e), (long)IOHIDElementGetLogicalMax(e));
+                break;
+            }
+        }
+        CFRelease(els);
+    }
+    if (const IOReturn o = IOHIDDeviceOpen(dev, kIOHIDOptionsTypeNone); o != kIOReturnSuccess) {
+        LOG("[input] IOKit HID device open failed: \"%s\" (vendor %04X product %04X): 0x%X", name.c_str(), v, pr, (unsigned)o);
+        return;
+    }
+    long max_report = 0;
+    if (CFNumberRef n = (CFNumberRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDMaxInputReportSizeKey))) CFNumberGetValue(n, kCFNumberLongType, &max_report);
+    auto* p = new IokitPad();
+    p->dev = (IOHIDDeviceRef)CFRetain(dev);
+    p->vendor = (uint16_t)v; p->product = (uint16_t)pr;
+    p->gc_adapter = true;
+    p->product_name = name;
+    p->name = name.empty() ? "GameCube Controller Adapter" : name;
+    p->gc.range = range;
+    p->report.assign((size_t)std::clamp(max_report, 64L, 4096L), 0);
+    IOHIDDeviceRegisterInputReportCallback(dev, p->report.data(), (CFIndex)p->report.size(), io_report, p);
+    if (hid_dump()) IOHIDDeviceRegisterInputValueCallback(dev, io_dump_value_cb, p);
+    LOG("[input] IOKit HID GameCube adapter connected: \"%s\" (manufacturer \"%s\", vendor %04X product %04X, PC mode, "
+        "axes %d..%d): read from its reports, GameController's copy set aside", name.c_str(), maker.c_str(), v, pr,
+        range.min, range.max);
+    g_io_pads.push_back(p);
+    note_dominant_labels();
+}
 static void io_add(IOHIDDeviceRef dev) {
     for (const auto* p : g_io_pads) if (p->dev == dev) return;
     int v = 0, pr = 0;
@@ -317,6 +457,11 @@ static void io_add(IOHIDDeviceRef dev) {
     // A joystick's Z/Rz axes can rest at their midpoint. Reading those as Xbox triggers would
     // press LT/RT at rest. No mapping is inferred for unknown physical or software devices.
     const hid_gamepad::Admission adm = hid_gamepad::admit(id);
+    if (hid_dump()) io_dump_elements(dev, name, v, pr);
+    if (adm == hid_gamepad::Admission::kGameCubeAdapter) {
+        io_add_gc_adapter(dev, name, maker, v, pr);
+        return;
+    }
     if (adm != hid_gamepad::Admission::kSteamVirtual) {
         LOG("[input] IOKit HID device ignored: \"%s\" (manufacturer \"%s\", vendor %04X product %04X, %s): %s",
             name.c_str(), maker.c_str(), v, pr, virtualPad ? "virtual" : "physical", hid_gamepad::ignore_reason(adm));
@@ -356,6 +501,8 @@ static void io_remove(IOHIDDeviceRef dev) {
     for (auto it = g_io_pads.begin(); it != g_io_pads.end(); ++it) {
         if ((*it)->dev != dev) continue;
         IOHIDDeviceRegisterInputValueCallback(dev, nullptr, nullptr);
+        if ((*it)->gc_adapter)
+            IOHIDDeviceRegisterInputReportCallback(dev, (*it)->report.data(), (CFIndex)(*it)->report.size(), nullptr, nullptr);
         IOHIDDeviceClose(dev, kIOHIDOptionsTypeNone);
         LOG("[input] IOKit HID controller disconnected: %s", (*it)->name.c_str());
         CFRelease((*it)->dev);
@@ -365,15 +512,47 @@ static void io_remove(IOHIDDeviceRef dev) {
         break;
     }
 }
+// the IOKit pad behind a device id; port: the adapter port (GameCube adapters, whose ports are
+// dev + 0..3: the device pointer is aligned, so these never meet another device's), else -1
+static IokitPad* io_pad_for(uintptr_t id, int* port = nullptr) {
+    for (IokitPad* p : g_io_pads) {
+        const uintptr_t base = (uintptr_t)p->dev;
+        if (!p->gc_adapter ? id == base : (id >= base && id < base + gc_adapter_hid::kPorts)) {
+            if (port) *port = p->gc_adapter ? int(id - base) : -1;
+            return p;
+        }
+    }
+    return nullptr;
+}
 static std::string io_device_name(uintptr_t id) {
-    for (IokitPad* p : g_io_pads) if ((uintptr_t)p->dev == id) return p->name;
+    int port = -1;
+    if (IokitPad* p = io_pad_for(id, &port)) return port >= 0 ? io_port_name(p, port) : p->name;
     return "HID controller";
+}
+// GameController's copy of an adapter read here (issue #556), left out so it is not read twice
+static bool io_shadowed(GCController* c) {
+    for (const IokitPad* p : g_io_pads)
+        if (p->gc_adapter && gc_adapter_hid::shadows(c.vendorName.UTF8String ?: "", c.productCategory.UTF8String ?: "",
+                                                     c.extendedGamepad != nil, p->product_name))
+            return true;
+    return false;
 }
 // every IOKit pad's values, keyed by the device pointer (distinct from a GCController's pointer); a
 // null goes into pads for each, so the per-device loops stay parallel with the GCController ones
 static void io_devices_values(std::vector<std::pair<uintptr_t, overlay::PadValues>>& out, std::vector<GCController*>* pads) {
     using namespace input_map;
     for (IokitPad* p : g_io_pads) {
+        if (p->gc_adapter) {  // one pad per adapter port in use
+            for (int port = 0; port < gc_adapter_hid::kPorts; port++) {
+                if (!p->gc.ports[port].listed(port)) continue;
+                overlay::PadValues d;
+                gc_adapter_hid::port_values(p->gc.ports[port], d.data());
+                if (!NSApp.isActive && !background_controllers()) d.fill(0.f);
+                out.emplace_back((uintptr_t)p->dev + port, d);
+                if (pads) pads->push_back(nil);
+            }
+            continue;
+        }
         overlay::PadValues d;
         float* v = d.data();
         for (int i = 0; i < kPadCount; i++) v[i] = 0;
@@ -433,6 +612,7 @@ static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values(std:
     for (GCController* c in [GCController controllers]) {
 #ifdef WWHD_HAS_IOKIT
         if (hid_gamepad::replace_steam_source(steam_controller(c), steam_count, virtual_count, virtual_input)) continue;
+        if (io_shadowed(c)) continue;  // a GameCube adapter read through IOKit (issue #556)
 #endif
         overlay::PadValues d;
         if (device_values(c, d.data())) {
@@ -528,9 +708,21 @@ static void note_dominant_labels() {
     }
 #endif
     input_map::note_face_labels(labels);
-    input_map::note_gamecube(gamecube_controller(dominant));
     auto mapping = input_map::current();
     bool changed = false;
+    bool io_gamecube = false;
+#ifdef WWHD_HAS_IOKIT
+    // PC-mode GameCube adapter ports (issue #556): the GameCube layout for each, as for a GameCube GCController
+    for (const IokitPad* p : g_io_pads) {
+        if (!p->gc_adapter) continue;
+        for (int port = 0; port < gc_adapter_hid::kPorts; port++) {
+            if (!p->gc.ports[port].listed(port)) continue;
+            io_gamecube = true;
+            changed |= input_map::auto_gamecube(mapping, "", io_port_name(p, port), true, true);
+        }
+    }
+#endif
+    input_map::note_gamecube(dominant ? gamecube_controller(dominant) : io_gamecube);
     for (GCController* c in [g_connect_order copy])
         if (c.extendedGamepad)
             changed |= input_map::auto_gamecube(mapping, "", pad_name(c), gamecube_controller(c), true);
@@ -1036,10 +1228,12 @@ void init() {
                 gamecube = input_map::gamecube_named(r.info.vendor.c_str(), r.info.category.c_str());
             }
 #ifdef WWHD_HAS_IOKIT
-            if (!c) for (const auto* p : g_io_pads) if ((uintptr_t)p->dev == devices[i].first && hid_gamepad::xbox_labelled(p->layout)) {
+            const IokitPad* io_pad = c ? nullptr : io_pad_for(devices[i].first);
+            if (io_pad && !io_pad->gc_adapter && hid_gamepad::xbox_labelled(io_pad->layout)) {
                 labels[0] = input_map::FaceLabel::kA; labels[1] = input_map::FaceLabel::kB;
                 labels[2] = input_map::FaceLabel::kX; labels[3] = input_map::FaceLabel::kY;
             }
+            if (io_pad && io_pad->gc_adapter) gamecube = true;  // PC-mode GameCube adapter port (issue #556)
 #endif
             // (the phone's labels may arrive or change while it is in use: unchanged values are no-ops)
             if ((pressed && devices[i].first != active) || (phone && devices[i].first == active)) {
@@ -1062,11 +1256,11 @@ void init() {
                 info.gyro = info.accel = true;
             }
 #ifdef WWHD_HAS_IOKIT
-            if (!c) for (const auto* p : g_io_pads) if ((uintptr_t)p->dev == devices[i].first) {
-                info.type = "HID gamepad";
-                info.vendor = p->vendor;
-                info.product = p->product;
-                break;
+            if (io_pad) {
+                // a GameCube adapter port: its letters A/B/X/Y on the A/B/X/Y inputs, the gamecube-apple table
+                info.type = io_pad->gc_adapter ? "gamecube-apple" : "HID gamepad";
+                info.vendor = io_pad->vendor;
+                info.product = io_pad->product;
             }
 #endif
             if (@available(macOS 11.0, *)) {

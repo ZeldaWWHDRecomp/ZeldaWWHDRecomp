@@ -153,12 +153,12 @@ never globally normalized or rewritten to fix an adapter.
 | --- | --- | --- |
 | Nintendo WUP-028, 057e:0337 | SDL HIDAPI: physical A/B/X/Y, right shoulder Z, trigger axes, misc3/misc4 clicks | Synthetic SDL raw-button fixture; no hardware |
 | Mayflash Wii U mode / compatible adapter presenting 057e:0337 | Same HIDAPI protocol if recognized by SDL | Database/driver only; no hardware |
-| PC-mode compatible adapters 0079:1843/1844/1846 | SDL's DragonRise/EVORETRO IDs and per-platform database; GameCube type or legacy PC face table | Detection/table unit tests; no hardware or PC-mode raw fixture |
+| PC-mode compatible adapters 0079:1843/1844/1846 | SDL's DragonRise/EVORETRO IDs and per-platform database; GameCube type or legacy PC face table. Native macOS host (#556): read through IOKit from the raw reports in SDL's HIDAPI PC-mode layout (`platform/gc_adapter_hid.cpp`), legacy ABXY table (`gamecube-apple`), GameController's copy left out | Detection/table unit tests; raw report fixtures for both firmware report formats (`gc_adapter_hid_test`); no hardware |
 | Cyber Gadget 0926:8888, HuiJia 1a34:f705, Austgame 05e3:0681 | SDL classification/database | Detection/table only; no hardware |
 | Nintendo Switch Online GameCube 057e:2073 | SDL Switch 2 HIDAPI and GameCube classification; axes and click convention | Driver only; no hardware |
 | PowerA 20d6:a711 / PDP 0e6f:0185 | SDL identifies GameCube-style controllers | Database only; no hardware |
 | 8BitDo / other receiver in Xbox or Switch mode | USB identity describes the receiver/emulated pad, not the attached GameCube pad | Manual selection only unless SDL explicitly reports GameCube type; no hardware |
-| Native macOS GameController host | No SDL VID/PID API here: explicit GameCube product category/vendor name; framework A/B/X/Y retain their letter identities; preset uses its ABXY table | Native UI/pure tests; no hardware; adapters not exposed by GameController require an SDL-host build |
+| Native macOS GameController host | No SDL VID/PID API here: explicit GameCube product category/vendor name; framework A/B/X/Y retain their letter identities; preset uses its ABXY table | Native UI/pure tests; no hardware; adapters not exposed by GameController require an SDL-host build, except the PC-mode adapters above (IOKit) |
 
 Sources inspected: SDL **release-3.4.10**
 [GameCube HIDAPI](https://github.com/libsdl-org/SDL/blob/release-3.4.10/src/joystick/hidapi/SDL_hidapi_gamecube.c),
